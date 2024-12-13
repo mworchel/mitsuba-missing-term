@@ -42,11 +42,14 @@ class ThreePointIntegrator(ADIntegrator):
                 block.set_coalesce(block.coalesce() and spp >= 4)
 
                 pos = dr.select(valid, sensor.sample_direction(si, [0, 0], active=valid)[0].uv, pos)
-
+                dist_squared = dr.squared_norm(si.p-ray.o)
+                dp = dr.dot(ray.d, si.n)
+                G = dr.select(valid, dr.norm(dr.cross(si.dp_du, si.dp_dv)) * -dp / dist_squared , 1.)
+                # Accumulate into the image block
                 ADIntegrator._splat_to_block(
                     block, film, pos,
-                    value=L * weight,
-                    weight=1,
+                    value=L * weight * dr.replace_grad(1, G/dr.detach(G)),
+                    weight=dr.replace_grad(1, G/dr.detach(G)),
                     alpha=dr.select(valid, mi.Float(1), mi.Float(0)),
                     aovs=aovs,
                     wavelengths=ray.wavelengths
