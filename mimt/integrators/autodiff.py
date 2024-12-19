@@ -44,7 +44,7 @@ class AutoDiffIntegrator(ADIntegrator):
                 # In primal mode, this is just an ordinary ray tracing operation.
                 si = scene.ray_intersect(ray,
                                          ray_flags=mi.RayFlags.All,
-                                         coherent=dr.eq(depth, 0))
+                                         coherent=(depth == 0))
 
                 # Get the BSDF, potentially computes texture-space differentials
                 bsdf = si.bsdf(ray)
@@ -53,7 +53,7 @@ class AutoDiffIntegrator(ADIntegrator):
     
                 # Hide the environment emitter if necessary
                 if self.hide_emitters:
-                    active_next &= ~(dr.eq(depth, 0) & ~si.is_valid())
+                    active_next &= ~((depth == 0) & ~si.is_valid())
     
                 # Compute MIS weight for emitter sample from previous bounce
                 ds = mi.DirectionSample3f(scene, si=si, ref=prev_si)
@@ -93,9 +93,9 @@ class AutoDiffIntegrator(ADIntegrator):
                 # Recompute `em_weight = em_val / ds.pdf` with only `em_val` attached
                 dr.disable_grad(ds.d, ds.pdf)
                 em_val    = scene.eval_emitter_direction(si, ds, active_em)
-                em_weight = dr.replace_grad(em_weight, dr.select(dr.neq(ds.pdf, 0), em_val / ds.pdf, 0))
+                em_weight = dr.replace_grad(em_weight, dr.select((ds.pdf != 0), em_val / ds.pdf, 0))
 
-                active_em &= dr.neq(ds.pdf, 0.0)
+                active_em &= (ds.pdf != 0)
 
                 # Evaluate BSDF * cos(theta) differentiably (and detach the bsdf pdf)
                 wo = si.to_local(ds.d)
@@ -119,7 +119,7 @@ class AutoDiffIntegrator(ADIntegrator):
                 # Recompute `bsdf_weight = bsdf_val / bsdf_sample.pdf` with only `bsdf_val` attached
                 dr.disable_grad(bsdf_sample.wo, bsdf_sample.pdf)
                 bsdf_val    = bsdf.eval(bsdf_ctx, si, bsdf_sample.wo, active_next)
-                bsdf_weight = dr.replace_grad(bsdf_weight, dr.select(dr.neq(bsdf_sample.pdf, 0), bsdf_val / bsdf_sample.pdf, 0))
+                bsdf_weight = dr.replace_grad(bsdf_weight, dr.select((bsdf_sample.pdf != 0), bsdf_val / bsdf_sample.pdf, 0))
     
                 # ---- Update loop variables based on current interaction -----
     
@@ -141,7 +141,7 @@ class AutoDiffIntegrator(ADIntegrator):
     
                 # Don't run another iteration if the throughput has reached zero
                 β_max = dr.max(β)
-                active_next &= dr.neq(β_max, 0)
+                active_next &= (β_max != 0)
     
                 # Russian roulette stopping probability (must cancel out ior^2
                 # to obtain unitless throughput, enforces a minimum probability)
@@ -158,7 +158,7 @@ class AutoDiffIntegrator(ADIntegrator):
     
         return (
             L,                   # Radiance/differential radiance
-            dr.neq(depth, 0),    # Ray validity flag for alpha blending
+            (depth != 0),    # Ray validity flag for alpha blending
             [],                  # Empty typle of AOVs
             L
         )

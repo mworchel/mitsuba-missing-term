@@ -169,7 +169,7 @@ class ThreePointIntegrator(ADIntegrator):
 
             si = scene.ray_intersect(ray,
                                     ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
-                                    coherent=dr.eq(depth, 0))
+                                    coherent=(depth == 0))
 
             if it == 0:
                 first_si = si
@@ -183,7 +183,7 @@ class ThreePointIntegrator(ADIntegrator):
 
             # Hide the environment emitter if necessary
             if self.hide_emitters:
-                active_next &= ~(dr.eq(depth, 0) & ~si.is_valid())
+                active_next &= ~((depth == 0) & ~si.is_valid())
 
             # Compute MIS weight for emitter sample from previous bounce
             ds = mi.DirectionSample3f(scene, si=si, ref=prev_si)
@@ -204,8 +204,8 @@ class ThreePointIntegrator(ADIntegrator):
             )
             # The first samples are sampled from screen space and not solid angles
             # -> We need to adopt the mis weight
-            mis = dr.select(dr.eq(depth, 0), 1, mis)
-            # G = dr.select(dr.eq(depth, 0), 1, G)
+            mis = dr.select((depth == 0), 1, mis)
+            # G = dr.select((depth == 0), 1, G)
             if it != 0:
                 β *= dr.replace_grad(1, G/dr.detach(G))
 
@@ -225,7 +225,7 @@ class ThreePointIntegrator(ADIntegrator):
             #em_weight /= G_em
             em_weight *= dr.replace_grad(1, ds_em.pdf/dr.detach(ds_em.pdf))
 
-            active_em &= dr.neq(ds_em.pdf, 0.0)
+            active_em &= (ds_em.pdf != 0.0)
             
             # We need to recompute the sample just for si_em.dp_du, si_em.dp_dv
             # si_em should be equivalent to ds_em
@@ -290,7 +290,7 @@ class ThreePointIntegrator(ADIntegrator):
 
             # Don't run another iteration if the throughput has reached zero
             β_max = dr.max(β)
-            active_next &= dr.neq(β_max, 0)
+            active_next &= (β_max != 0)
 
             # Russian roulette stopping probability (must cancel out ior^2
             # to obtain unitless throughput, enforces a minimum probability)
@@ -307,7 +307,7 @@ class ThreePointIntegrator(ADIntegrator):
     
         return (
             L,                   # Radiance/differential radiance
-            dr.neq(depth, 0),    # Ray validity flag for alpha blending
+            (depth != 0),    # Ray validity flag for alpha blending
             [],                  # Empty typle of AOVs
             first_si             # Necessary for screen position
         )
