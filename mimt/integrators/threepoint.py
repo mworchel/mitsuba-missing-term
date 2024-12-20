@@ -167,9 +167,10 @@ class ThreePointIntegrator(ADIntegrator):
         for it in range(self.max_depth):
             active_next = mi.Bool(active)
 
-            si = scene.ray_intersect(ray,
+            si = scene.ray_intersect(dr.detach(ray),
                                     ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
                                     coherent=(depth == 0))
+            si.wi = dr.select((depth == 0) | ~active_next, si.wi, si.to_local(dr.normalize(ray.o - si.p))) 
 
             if it == 0:
                 first_si = si
@@ -209,6 +210,7 @@ class ThreePointIntegrator(ADIntegrator):
             if it != 0:
                 β *= dr.replace_grad(1, G/dr.detach(G))
 
+            #Le = β * si.emitter(scene).eval(si, active_next)
             Le = β * dr.detach(mis) * si.emitter(scene).eval(si, active_next)
             L += Le    
 
@@ -260,10 +262,11 @@ class ThreePointIntegrator(ADIntegrator):
 
             # ------------------ Attached BSDF sampling -------------------
 
-            bsdf_sample, bsdf_weight = bsdf.sample(bsdf_ctx, si,
-                                                sampler.next_1d(),
-                                                sampler.next_2d(),
-                                                active_next)
+            with dr.suspend_grad():
+                bsdf_sample, bsdf_weight = bsdf.sample(bsdf_ctx, si,
+                                                    sampler.next_1d(),
+                                                    sampler.next_2d(),
+                                                    active_next)
             
             # The sampled bsdf direction and the pdf must be detached
             # Recompute `bsdf_weight = bsdf_val / bsdf_sample.pdf` with only `bsdf_val` attached
@@ -271,20 +274,29 @@ class ThreePointIntegrator(ADIntegrator):
             # bsdf_val    = bsdf.eval(bsdf_ctx, si, bsdf_sample.wo, active_next)
             # bsdf_weight = dr.replace_grad(bsdf_weight, dr.select(dr.neq(bsdf_sample.pdf, 0), bsdf_val / bsdf_sample.pdf, 0))
 
+            ray = si.spawn_ray(si.to_world(bsdf_sample.wo))
+
+            si_next = scene.ray_intersect(dr.detach(ray),
+                                            ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
+                                            coherent=mi.Bool(False))
+            
+            # Recompute 'wo' to propagate derivatives to cosine term
+            diff_next = si_next.p - si.p
+            dir_next = dr.normalize(diff_next)
+            wo = si.to_local(dir_next)
+            bsdf_val    = bsdf.eval(bsdf_ctx, si, wo, active_next)
+            bsdf_weight = dr.replace_grad(bsdf_weight, dr.select((bsdf_sample.pdf != 0), bsdf_val / dr.detach(bsdf_sample.pdf), 0))
             # ---- Update loop variables based on current interaction -----
 
-            wo_world = si.to_world(bsdf_sample.wo)
-            # The direction in *world space* is detached
-
-            ray = si.spawn_ray(wo_world) 
             η *= bsdf_sample.eta
             # Detached Sampling
-            β *= bsdf_weight * dr.replace_grad(1, bsdf_sample.pdf/dr.detach(bsdf_sample.pdf))
+            β *= bsdf_weight
 
             # Information about the current vertex needed by the next iteration
             prev_si = si
             prev_bsdf_pdf = bsdf_sample.pdf
             prev_bsdf_delta = mi.has_flag(bsdf_sample.sampled_type, mi.BSDFFlags.Delta)
+            # si = si_next
 
             # -------------------- Stopping criterion ---------------------
 
