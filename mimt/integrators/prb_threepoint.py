@@ -282,6 +282,10 @@ class PRBThreePointIntegrator(RBIntegrator):
                 dr.forward_to(result_img, flags=dr.ADFlag.Default | dr.ADFlag.AllowNoGrad)
                 first_hit = dr.grad(result_img)
 
+        # Explicitly delete any remaining unused variables
+        del sampler, ray, weight, pos, L, valid, aovs, δL, δaovs, \
+            valid_2, params, state_out, state_out_2, block
+        
         return result_grad + first_hit
     
     def render_backward(self: mi.SamplingIntegrator,
@@ -530,7 +534,7 @@ class PRBThreePointIntegrator(RBIntegrator):
                                          coherent=(depth == 0))
                 # si.wi has a gradient as prev_si might move with pi
                 # if dr.hint(not primal, mode='scalar'):
-                si.wi = dr.select((depth == 0), si.wi, dr.normalize(prev_si.p - si.p))
+                si.wi = dr.select((depth == 0) | ~active_next, si.wi, si.to_local(dr.normalize(prev_si.p - si.p)))
                     # ray.o = prev_si.p
 
             # Get the BSDF, potentially computes texture-space differentials
@@ -551,8 +555,8 @@ class PRBThreePointIntegrator(RBIntegrator):
             
             with dr.resume_grad(when=not primal):
                 dist_squared = dr.squared_norm(si.p-prev_si.p)
-                dp = dr.dot(si.wi, si.n)
-                G = dr.select(active_next, dr.norm(dr.cross(si.dp_du, si.dp_dv)) * dp / dist_squared , 1.)
+                dp = dr.dot(si.to_world(si.wi), si.n)
+                G = dr.select(active_next, dr.norm(dr.cross(si.dp_du, si.dp_dv)) * -dp / dist_squared, 1.)
             
             mis = mis_weight(
                 prev_bsdf_pdf*G,
@@ -714,6 +718,7 @@ class PRBThreePointIntegrator(RBIntegrator):
 
             depth[si.is_valid()] += 1
             active = active_next
+            prev_ray = ray
             ray = ray_next
     
         return (
