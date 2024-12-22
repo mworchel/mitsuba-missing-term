@@ -9,181 +9,6 @@ import gc
 
 class PRBThreePointIntegrator(RBIntegrator):
 
-    # def render_forward(self: mi.SamplingIntegrator,
-    #                    scene: mi.Scene,
-    #                    params: Any,
-    #                    sensor: Union[int, mi.Sensor] = 0,
-    #                    seed: mi.UInt32 = 0,
-    #                    spp: int = 0) -> mi.TensorXf:
-    #     """
-    #     Evaluates the forward-mode derivative of the rendering step.
-
-    #     Forward-mode differentiation propagates gradients from scene parameters
-    #     through the simulation, producing a *gradient image* (i.e., the derivative
-    #     of the rendered image with respect to those scene parameters). The gradient
-    #     image is very helpful for debugging, for example to inspect the gradient
-    #     variance or visualize the region of influence of a scene parameter. It is
-    #     not particularly useful for simultaneous optimization of many parameters,
-    #     since multiple differentiation passes are needed to obtain separate
-    #     derivatives for each scene parameter. See ``Integrator.render_backward()``
-    #     for an efficient way of obtaining all parameter derivatives at once, or
-    #     simply use the ``mi.render()`` abstraction that hides both
-    #     ``Integrator.render_forward()`` and ``Integrator.render_backward()`` behind
-    #     a unified interface.
-
-    #     Before calling this function, you must first enable gradient tracking and
-    #     furthermore associate concrete input gradients with one or more scene
-    #     parameters, or the function will just return a zero-valued gradient image.
-    #     This is typically done by invoking ``dr.enable_grad()`` and
-    #     ``dr.set_grad()`` on elements of the ``SceneParameters`` data structure
-    #     that can be obtained obtained via a call to
-    #     ``mi.traverse()``.
-
-    #     Parameter ``scene`` (``mi.Scene``):
-    #         The scene to be rendered differentially.
-
-    #     Parameter ``params``:
-    #        An arbitrary container of scene parameters that should receive
-    #        gradients. Typically this will be an instance of type
-    #        ``mi.SceneParameters`` obtained via ``mi.traverse()``. However, it
-    #        could also be a Python list/dict/object tree (DrJit will traverse it
-    #        to find all parameters). Gradient tracking must be explicitly enabled
-    #        for each of these parameters using ``dr.enable_grad(params['parameter_name'])``
-    #        (i.e. ``render_forward()`` will not do this for you). Furthermore,
-    #        ``dr.set_grad(...)`` must be used to associate specific gradient values
-    #        with each parameter.
-
-    #     Parameter ``sensor`` (``int``, ``mi.Sensor``):
-    #         Specify a sensor or a (sensor index) to render the scene from a
-    #         different viewpoint. By default, the first sensor within the scene
-    #         description (index 0) will take precedence.
-
-    #     Parameter ``seed` (``int``)
-    #         This parameter controls the initialization of the random number
-    #         generator. It is crucial that you specify different seeds (e.g., an
-    #         increasing sequence) if subsequent calls should produce statistically
-    #         independent images (e.g. to de-correlate gradient-based optimization
-    #         steps).
-
-    #     Parameter ``spp`` (``int``):
-    #         Optional parameter to override the number of samples per pixel for the
-    #         differential rendering step. The value provided within the original
-    #         scene specification takes precedence if ``spp=0``.
-    #     """
-
-    #     if isinstance(sensor, int):
-    #         sensor = scene.sensors()[sensor]
-
-    #     film = sensor.film()
-    #     first_hit = sensor.film()
-
-    #     # Disable derivatives in all of the following
-    #     with dr.suspend_grad():
-    #         # Prepare the film and sample generator for rendering
-    #         sampler, spp = self.prepare(sensor, seed, spp, self.aov_names())
-
-    #         # Generate a set of rays starting at the sensor, keep track of
-    #         # derivatives wrt. sample positions ('pos') if there are any
-    #         ray, weight, pos = self.sample_rays(scene, sensor, sampler)
-
-    #         # Launch the Monte Carlo sampling process in primal mode (1)
-    #         L, valid, aovs, state_out = self.sample(
-    #             mode=dr.ADMode.Primal,
-    #             scene=scene,
-    #             sampler=sampler.clone(),
-    #             ray=ray,
-    #             depth=mi.UInt32(0),
-    #             δL=None,
-    #             state_in=None,
-    #             active=mi.Bool(True)
-    #         )
-                
-    #         # Launch the Monte Carlo sampling process in forward mode (2)
-    #         δL, valid_2, δaovs, state_out_2 = self.sample(
-    #             mode=dr.ADMode.Forward,
-    #             scene=scene,
-    #             sampler=sampler,
-    #             ray=ray,
-    #             depth=mi.UInt32(0),
-    #             δL=None,
-    #             δaovs=None,
-    #             state_in=state_out,
-    #             active=mi.Bool(True)
-    #         )
-
-    #         # Prepare an ImageBlock as specified by the film
-    #         block = film.create_block()
-
-    #         # Only use the coalescing feature when rendering enough samples
-    #         block.set_coalesce(block.coalesce() and spp >= 4)
-
-    #         # Accumulate into the image block
-    #         ADIntegrator._splat_to_block(
-    #             block, film, pos,
-    #             value=δL * weight,
-    #             weight=1.0,
-    #             alpha=dr.select(valid_2, mi.Float(1), mi.Float(0)),
-    #             aovs=[δaov * weight for δaov in δaovs],
-    #             wavelengths=ray.wavelengths
-    #         )
-            
-    #         # Perform the weight division and return an image tensor
-    #         film.put_block(block)
-    #         result_grad = film.develop()
-            
-    #         # import matplotlib.pyplot as plt#
-    #         # import numpy as np
-    #         # plt.imshow(result_grad, cmap='coolwarm', vmin=-np.quantile(np.abs(result_grad), 0.89), vmax=np.quantile(np.abs(result_grad), 0.89))
-    #         # print(dr.max(result_grad))
-
-    #         # Add differentials from first intersection
-    #         with dr.resume_grad():
-
-
-    #             # Prepare an ImageBlock as specified by the film
-    #             first_hit_block = first_hit.create_block()
-
-    #             # Only use the coalescing feature when rendering enough samples
-    #             first_hit_block.set_coalesce(first_hit_block.coalesce() and spp >= 4)
-
-    #             si = scene.ray_intersect(ray,
-    #                                      ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
-    #                                      coherent=mi.Bool(True))
-                
-    #             pos = dr.select(valid, sensor.sample_direction(si, [0, 0], active=valid)[0].uv, pos)
-    #             diff = si.p-ray.o
-    #             dist_squared = dr.squared_norm(diff)
-    #             dp = dr.dot(dr.normalize(diff), si.n)
-    #             G = dr.select(valid, dr.norm(dr.cross(si.dp_du, si.dp_dv)) * -dp / dist_squared , 1.)
-
-    #             # Accumulate into the image first_hit_block
-    #             ADIntegrator._splat_to_block(
-    #                 first_hit_block, first_hit, pos,
-    #                 value=L * weight * dr.replace_grad(1, G/dr.detach(G)),
-    #                 weight=dr.replace_grad(1, G/dr.detach(G)),
-    #                 alpha=dr.select(valid, mi.Float(1), mi.Float(0)),
-    #                 aovs=aovs,
-    #                 wavelengths=ray.wavelengths
-    #             )
-
-    #             # Perform the weight division and return an image tensor
-    #             first_hit.put_block(first_hit_block)
-    #             result_img = first_hit.develop()
-
-    #             # Propagate the gradients to the image tensor
-    #             dr.forward_to(result_img)
-    #             grad_first = dr.grad(result_img)
-
-    #         # Explicitly delete any remaining unused variables
-    #         del sampler, ray, weight, pos, L, valid, aovs, δL, δaovs, \
-    #             valid_2, params, state_out, state_out_2, block
-
-    #         result_grad += grad_first # ,flags=dr.ADFlag.Default | dr.ADFlag.AllowNoGrad)
-
-
-    #     return result_grad
-
-
     def render_forward(self: mi.SamplingIntegrator,
                        scene: mi.Scene,
                        params: Any,
@@ -611,6 +436,8 @@ class PRBThreePointIntegrator(RBIntegrator):
 
             with dr.resume_grad(when=not primal):
                 Lr_dir = β * mis_em * bsdf_value_em * em_weight
+                L_G = L * dr.replace_grad(1, G/dr.detach(G))
+                L_G = dr.select((depth == 0), 0, L_G)
 
             # ------------------ BSDF sampling -------------------
 
@@ -682,9 +509,6 @@ class PRBThreePointIntegrator(RBIntegrator):
                     tmp = inv_bsdf_val_det * bsdf_val
                     tmp_replaced = dr.replace_grad(dr.ones(mi.Float, dr.width(tmp)), tmp) #FIXME
                     Lr_ind = L * tmp_replaced
-
-                    L_G = L * dr.replace_grad(1, G/dr.detach(G))
-                    L_G = dr.select((depth == 0), 0, L_G)
 
                     # Differentiable Monte Carlo estimate of all contributions
                     Lo = Le + L_G + Lr_dir + Lr_ind
