@@ -86,10 +86,11 @@ class PRBThreePointIntegrator(RBIntegrator):
                                          ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
                                          coherent=mi.Bool(True))
                 pos = dr.select(valid, sensor.sample_direction(si, [0, 0], active=valid)[0].uv, pos)
-                dist_squared = dr.squared_norm(si.p-ray.o)
-                dp = dr.dot(ray.d, si.n)
+                diff = si.p-ray.o
+                dist_squared = dr.squared_norm(diff)
+                dp = dr.dot(dr.normalize(diff), si.n)
                 G = dr.select(valid, dr.norm(dr.cross(si.dp_du, si.dp_dv)) * -dp / dist_squared , 1.)
-                # Accumulate into the image block
+                #Accumulate into the image block
                 ADIntegrator._splat_to_block(
                     block, film, pos,
                     value=L * weight * dr.replace_grad(1, G/dr.detach(G)),
@@ -381,7 +382,9 @@ class PRBThreePointIntegrator(RBIntegrator):
             with dr.resume_grad(when=not primal):
                 dist_squared = dr.squared_norm(si.p-prev_si.p)
                 dp = dr.dot(si.to_world(si.wi), si.n)
-                G = dr.select(active_next, dr.norm(dr.cross(si.dp_du, si.dp_dv)) * -dp / dist_squared, 1.)
+                G = dr.select(active_next, dr.norm(dr.cross(si.dp_du, si.dp_dv)) * dp / dist_squared, 1.)
+                L_G = L * dr.replace_grad(1., G/dr.detach(G))
+                L_G = dr.select((depth == 0), 0, L_G)           
             
             mis = mis_weight(
                 prev_bsdf_pdf*G,
@@ -394,6 +397,7 @@ class PRBThreePointIntegrator(RBIntegrator):
             # remember beta contains geometry term/pdf == 1
             with dr.resume_grad(when=not primal):
                 Le = β * mis * si.emitter(scene).eval(si, active_next)
+
 
             # ---------------------- Emitter sampling ----------------------
 
@@ -416,7 +420,7 @@ class PRBThreePointIntegrator(RBIntegrator):
                 # calculate the bsdf weight (for path througput) and pdf (for mis weighting)
                 diff_em = si_em.p - si.p
                 ds_em.d = dr.normalize(diff_em)
-                wo = si.to_local(dr.normalize(ds_em.d))
+                wo = si.to_local(ds_em.d)
                 bsdf_value_em, bsdf_pdf_em = bsdf.eval_pdf(bsdf_ctx, si, wo, active_em)
                 
                 # ds_em.pdf includes the inv geometry term, 
@@ -436,8 +440,7 @@ class PRBThreePointIntegrator(RBIntegrator):
 
             with dr.resume_grad(when=not primal):
                 Lr_dir = β * mis_em * bsdf_value_em * em_weight
-                L_G = L * dr.replace_grad(1, G/dr.detach(G))
-                L_G = dr.select((depth == 0), 0, L_G)
+
 
             # ------------------ BSDF sampling -------------------
 
