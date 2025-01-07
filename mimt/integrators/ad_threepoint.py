@@ -44,12 +44,12 @@ class ThreePointIntegrator(ADIntegrator):
                 pos = dr.select(valid, sensor.sample_direction(si, [0, 0], active=valid)[0].uv, pos)
                 dist_squared = dr.squared_norm(si.p-ray.o)
                 dp = dr.dot(ray.d, si.n)
-                G = dr.select(valid, dr.norm(dr.cross(si.dp_du, si.dp_dv)) * -dp / dist_squared , 1.)
+                D = dr.select(valid, dr.norm(dr.cross(si.dp_du, si.dp_dv)) * -dp / dist_squared , 1.)
                 # Accumulate into the image block
                 ADIntegrator._splat_to_block(
                     block, film, pos,
-                    value=L * weight * dr.replace_grad(1, G/dr.detach(G)),
-                    weight=dr.replace_grad(1, G/dr.detach(G)),
+                    value=L * weight * dr.replace_grad(1, D/dr.detach(D)),
+                    weight=dr.replace_grad(1, D/dr.detach(D)),
                     alpha=dr.select(valid, mi.Float(1), mi.Float(0)),
                     aovs=aovs,
                     wavelengths=ray.wavelengths
@@ -103,29 +103,24 @@ class ThreePointIntegrator(ADIntegrator):
                 pos = dr.select(valid, sensor.sample_direction(si, [0, 0], active=valid)[0].uv, pos)
                 dist_squared = dr.squared_norm(si.p-ray.o)
                 dp = dr.dot(ray.d, si.n)
-                G = dr.select(valid, dr.norm(dr.cross(si.dp_du, si.dp_dv)) * -dp / dist_squared , 1.)
+                D = dr.select(valid, dr.norm(dr.cross(si.dp_du, si.dp_dv)) * -dp / dist_squared , 1.)
                 # Accumulate into the image block
                 ADIntegrator._splat_to_block(
                     block, film, pos,
-                    value=L * weight * dr.replace_grad(1, G/dr.detach(G)),
-                    weight=dr.replace_grad(1, G/dr.detach(G)),
+                    value=L * weight * dr.replace_grad(1, D/dr.detach(D)),
+                    weight=dr.replace_grad(1, D/dr.detach(D)),
                     alpha=dr.select(valid, mi.Float(1), mi.Float(0)),
                     aovs=aovs,
                     wavelengths=ray.wavelengths
                 )
-
+                # Perform the weight division
                 film.put_block(block)
-
-                del valid
-
-                # This step launches a kernel
-                dr.schedule(block.tensor())
-                image = film.develop()
+                result_img = film.develop()
 
                 # Differentiate sample splatting and weight division steps to
                 # retrieve the adjoint radiance
-                dr.set_grad(image, grad_in)
-                dr.enqueue(dr.ADMode.Backward, image)
+                dr.set_grad(result_img, grad_in)
+                dr.enqueue(dr.ADMode.Backward, result_img)
                 dr.traverse(dr.ADMode.Backward)
 
             # We don't need any of the outputs here
@@ -177,7 +172,6 @@ class ThreePointIntegrator(ADIntegrator):
             
 
             # Get the BSDF, potentially computes texture-space differentials
-            # Ugo: This ray needs to be constructed from prev_si/attached
             bsdf = si.bsdf(ray)
 
             # ---------------------- Direct emission ----------------------
@@ -197,18 +191,18 @@ class ThreePointIntegrator(ADIntegrator):
             # -> We need to multiply both with the geometry term:
             dist_squared = dr.squared_norm(si.p-ray.o)
             dp = dr.dot(ds.d, ds.n)
-            G = dr.select(active_next, dr.norm(dr.cross(si.dp_du, si.dp_dv)) * -dp / dist_squared , 1.)
+            D = dr.select(active_next, dr.norm(dr.cross(si.dp_du, si.dp_dv)) * -dp / dist_squared , 1.)
 
             mis = mis_weight(
-                prev_bsdf_pdf*G,
-                si_pdf*G
+                prev_bsdf_pdf*D,
+                si_pdf*D
             )
             # The first samples are sampled from screen space and not solid angles
             # -> We need to adopt the mis weight
             mis = dr.select((depth == 0), 1, mis)
-            # G = dr.select((depth == 0), 1, G)
+            # D = dr.select((depth == 0), 1, D)
             if it != 0:
-                β *= dr.replace_grad(1, G/dr.detach(G))
+                β *= dr.replace_grad(1, D/dr.detach(D))
 
             #Le = β * si.emitter(scene).eval(si, active_next)
             Le = β * dr.detach(mis) * si.emitter(scene).eval(si, active_next)
@@ -224,7 +218,7 @@ class ThreePointIntegrator(ADIntegrator):
 
             # If so, randomly sample an emitter with derivative tracking.
             ds_em, em_weight = scene.sample_emitter_direction(si, sampler.next_2d(), True, active_em)
-            #em_weight /= G_em
+            #em_weight /= D_em
             em_weight *= dr.replace_grad(1, ds_em.pdf/dr.detach(ds_em.pdf))
 
             active_em &= (ds_em.pdf != 0.0)
@@ -250,14 +244,14 @@ class ThreePointIntegrator(ADIntegrator):
             # dp_em = dr.dot(ds_em.d, ds_em.n)
             dp_em = dr.dot(ds_em_dir, ds_em.n)
             dist_squared_em = dr.squared_norm(diff_em)
-            G_em = dr.select(active_em, dr.norm(dr.cross(si_em.dp_du, si_em.dp_dv)) * -dp_em / dist_squared_em , 0.)
-            mis_em = dr.select(ds_em.delta, 1, mis_weight(ds_em.pdf*G_em, bsdf_pdf_em*G_em))
+            D_em = dr.select(active_em, dr.norm(dr.cross(si_em.dp_du, si_em.dp_dv)) * -dp_em / dist_squared_em , 0.)
+            mis_em = dr.select(ds_em.delta, 1, mis_weight(ds_em.pdf*D_em, bsdf_pdf_em*D_em))
             # Detached Sampling
-            em_weight *= dr.replace_grad(1, G_em/dr.detach(G_em))
+            em_weight *= dr.replace_grad(1, D_em/dr.detach(D_em))
 
             # As we sample (uv) points and not solid angles we need to add the geometry term
             # mis_em *
-            Lr_dir = β * dr.detach(mis_em) * bsdf_value_em * em_weight # * G_em # * mis_em
+            Lr_dir = β * dr.detach(mis_em) * bsdf_value_em * em_weight # * D_em # * mis_em
             L += Lr_dir
 
             # ------------------ Attached BSDF sampling -------------------
