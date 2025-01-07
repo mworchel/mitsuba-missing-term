@@ -1,3 +1,3 @@
 from .autodiff import *
-from .threepoint import *
+from .ad_threepoint import *
 from .prb_threepoint import *
