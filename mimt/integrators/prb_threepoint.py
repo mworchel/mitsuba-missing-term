@@ -495,13 +495,9 @@ class PRBThreePointIntegrator(RBIntegrator):
 
             # ------------------ Prepare next iteration ------------------
             # Information about the current vertex needed by the next iteration
-            prev_si = si
             prev_bsdf_pdf = bsdf_sample.pdf
             prev_bsdf_delta = mi.has_flag(bsdf_sample.sampled_type, mi.BSDFFlags.Delta)
             
-            # D term is needed for mis in next hit
-            prev_D = D
-
             depth[si.is_valid()] += 1
             active = active_next
             prev_ray = ray
