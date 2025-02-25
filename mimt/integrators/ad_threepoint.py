@@ -165,7 +165,7 @@ class ThreePointIntegrator(ADIntegrator):
             si = scene.ray_intersect(dr.detach(ray),
                                     ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
                                     coherent=(depth == 0))
-            si.wi = dr.select((depth == 0) | ~active_next, si.wi, si.to_local(dr.normalize(ray.o - si.p))) 
+            si.wi = dr.select((depth == 0) | ~si.is_valid(), si.wi, si.to_local(dr.normalize(ray.o - si.p))) 
 
             if it == 0:
                 first_si = si
@@ -191,7 +191,9 @@ class ThreePointIntegrator(ADIntegrator):
             # -> We need to multiply both with the geometry term:
             dist_squared = dr.squared_norm(si.p-ray.o)
             dp = dr.dot(ds.d, ds.n)
-            D = dr.select(active_next, dr.norm(dr.cross(si.dp_du, si.dp_dv)) * -dp / dist_squared , 1.)
+            # For environment emitters, si.is_valid() will be false and
+            # the local frame (dp_du, dp_dv) is invalid, but they should still contribute
+            D = dr.select(active_next & si.is_valid(), dr.norm(dr.cross(si.dp_du, si.dp_dv)) * -dp / dist_squared, 1.)
 
             # MW: For completeness, include multiplication by D (but it cancels)
             mis = mis_weight(
@@ -206,8 +208,8 @@ class ThreePointIntegrator(ADIntegrator):
                 β *= dr.replace_grad(1, D/dr.detach(D))
 
             #Le = β * si.emitter(scene).eval(si, active_next)
-            Le = β * dr.detach(mis) * si.emitter(scene).eval(si, active_next)
-            L += Le    
+            Le = β * dr.detach(mis) * ds.emitter.eval(si, active_next)
+            L += Le
 
             # ---------------------- Attached Emitter sampling ----------------------
 
@@ -232,8 +234,8 @@ class ThreePointIntegrator(ADIntegrator):
                                         active=active_em)
 
             diff_em = ds_em.p - si.p
-            ds_em_dir = dr.normalize(diff_em)
-            wo = si.to_local(dr.normalize(diff_em))
+            ds_em.d = dr.normalize(diff_em)
+            wo = si.to_local(ds_em.d)
             bsdf_value_em, bsdf_pdf_em = bsdf.eval_pdf(bsdf_ctx, si, wo, active_em)
 
             # This mis weight is wrong:
@@ -243,9 +245,11 @@ class ThreePointIntegrator(ADIntegrator):
             # and bsdf_pdf_em does not contain the geometry term.
             # -> We need to multiply both with the geometry term:
             # dp_em = dr.dot(ds_em.d, ds_em.n)
-            dp_em = dr.dot(ds_em_dir, ds_em.n)
+            dp_em = dr.dot(ds_em.d, ds_em.n)
             dist_squared_em = dr.squared_norm(diff_em)
-            D_em = dr.select(active_em, dr.norm(dr.cross(si_em.dp_du, si_em.dp_dv)) * -dp_em / dist_squared_em , 0.)
+            # For environment emitters, si.is_valid() will be false and
+            # the local frame (dp_du, dp_dv) is invalid, but they should still contribute
+            D_em = dr.select(active_em & si_em.is_valid(), dr.norm(dr.cross(si_em.dp_du, si_em.dp_dv)) * -dp_em / dist_squared_em, 1.)
             # MW: For completeness, include multiplication by D (but it cancels)
             mis_em = dr.select(ds_em.delta, 1, mis_weight(ds_em.pdf*D_em, bsdf_pdf_em*D_em))
             # Detached Sampling

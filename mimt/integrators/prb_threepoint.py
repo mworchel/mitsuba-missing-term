@@ -312,7 +312,7 @@ class PRBThreePointIntegrator(RBIntegrator):
                                          coherent=(depth == 0))
                 # si.wi has a gradient as prev_si might move with pi
                 # if dr.hint(not primal, mode='scalar'):
-                si.wi = dr.select((depth == 0) | ~active_next, si.wi, si.to_local(dr.normalize(prev_si.p - si.p)))
+                si.wi = dr.select((depth == 0) | ~si.is_valid(), si.wi, si.to_local(dr.normalize(prev_si.p - si.p)))
                     # ray.o = prev_si.p
 
             # Get the BSDF, potentially computes texture-space differentials
@@ -333,7 +333,9 @@ class PRBThreePointIntegrator(RBIntegrator):
             with dr.resume_grad(when=not primal):
                 dist_squared = dr.squared_norm(si.p-prev_si.p)
                 dp = dr.dot(si.to_world(si.wi), si.n)
-                D = dr.select(active_next, dr.norm(dr.cross(si.dp_du, si.dp_dv)) * dp / dist_squared, 1.)
+                # For environment emitters, si.is_valid() will be false and
+                # the local frame (dp_du, dp_dv) is invalid, but they should still contribute
+                D = dr.select(active_next & si.is_valid(), dr.norm(dr.cross(si.dp_du, si.dp_dv)) * dp / dist_squared, 1.)
                 LD = L * dr.replace_grad(1., D/dr.detach(D))
                 LD = dr.select((depth == 0), 0, LD)           
             
@@ -348,7 +350,7 @@ class PRBThreePointIntegrator(RBIntegrator):
 
             # remember beta contains geometry term/pdf == 1
             with dr.resume_grad(when=not primal):
-                Le = β * mis * si.emitter(scene).eval(si, active_next)
+                Le = β * mis * ds.emitter.eval(si, active_next)
 
 
             # ---------------------- Emitter sampling ----------------------
@@ -370,7 +372,9 @@ class PRBThreePointIntegrator(RBIntegrator):
                                             active=active_em)
 
                 # calculate the bsdf weight (for path througput) and pdf (for mis weighting)
-                diff_em = si_em.p - si.p
+                # MW: for environment emitters, we have si_em.p != ds_em.p (because si_em.p = 0)
+                # TODO: How to handle this correctly?
+                diff_em = dr.select(si_em.is_valid(), si_em.p - si.p, ds_em.p - si.p)
                 ds_em.d = dr.normalize(diff_em)
                 wo = si.to_local(ds_em.d)
                 bsdf_value_em, bsdf_pdf_em = bsdf.eval_pdf(bsdf_ctx, si, wo, active_em)
@@ -380,7 +384,9 @@ class PRBThreePointIntegrator(RBIntegrator):
                 # -> We need to multiply both with the geometry term:
                 dp_em = dr.dot(ds_em.d, si_em.n)
                 dist_squared_em = dr.squared_norm(diff_em)
-                D_em = dr.select(active_em, dr.norm(dr.cross(si_em.dp_du, si_em.dp_dv)) * -dp_em / dist_squared_em , 0.) 
+                # For environment emitters, si.is_valid() will be false and
+                # the local frame (dp_du, dp_dv) is invalid, but they should still contribute
+                D_em = dr.select(active_em & si_em.is_valid(), dr.norm(dr.cross(si_em.dp_du, si_em.dp_dv)) * -dp_em / dist_squared_em , 1.) 
                 
                 if dr.hint(not primal, mode='scalar'):
                     # update gradient of em_weight
