@@ -337,6 +337,7 @@ class PRBThreePointIntegrator(RBIntegrator):
                 LD = L * dr.replace_grad(1., D/dr.detach(D))
                 LD = dr.select((depth == 0), 0, LD)           
             
+            # MW: For completeness, include multiplication by D (but it cancels)
             mis = mis_weight(
                 prev_bsdf_pdf*D,
                 si_pdf*D
@@ -387,6 +388,7 @@ class PRBThreePointIntegrator(RBIntegrator):
                     em_weight = dr.replace_grad(em_weight, dr.select((ds_em.pdf != 0), em_val / ds_em.pdf, 0)) * dr.replace_grad(1, D_em/dr.detach(D_em))
 
 
+            # MW: For completeness, include multiplication by D (but it cancels)
             mis_em = dr.select(ds_em.delta, 1, mis_weight(ds_em.pdf*D_em, bsdf_pdf_em*D_em))
 
             with dr.resume_grad(when=not primal):

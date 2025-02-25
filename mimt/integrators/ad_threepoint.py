@@ -193,6 +193,7 @@ class ThreePointIntegrator(ADIntegrator):
             dp = dr.dot(ds.d, ds.n)
             D = dr.select(active_next, dr.norm(dr.cross(si.dp_du, si.dp_dv)) * -dp / dist_squared , 1.)
 
+            # MW: For completeness, include multiplication by D (but it cancels)
             mis = mis_weight(
                 prev_bsdf_pdf*D,
                 si_pdf*D
@@ -245,6 +246,7 @@ class ThreePointIntegrator(ADIntegrator):
             dp_em = dr.dot(ds_em_dir, ds_em.n)
             dist_squared_em = dr.squared_norm(diff_em)
             D_em = dr.select(active_em, dr.norm(dr.cross(si_em.dp_du, si_em.dp_dv)) * -dp_em / dist_squared_em , 0.)
+            # MW: For completeness, include multiplication by D (but it cancels)
             mis_em = dr.select(ds_em.delta, 1, mis_weight(ds_em.pdf*D_em, bsdf_pdf_em*D_em))
             # Detached Sampling
             em_weight *= dr.replace_grad(1, D_em/dr.detach(D_em))
