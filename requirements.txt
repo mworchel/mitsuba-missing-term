@@ -3,3 +3,4 @@ mitsuba==3.6.0
 numpy
 tqdm
 ipywidgets
+ipykernel
