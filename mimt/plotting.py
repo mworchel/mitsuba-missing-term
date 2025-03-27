@@ -82,4 +82,4 @@ def generate_figure(integrators: List[str], data: dict, output_path: Path, grad_
 
     output_dir = output_path.parent
     output_dir.mkdir(exist_ok=True, parents=True)
-    fig.savefig(output_path, facecolor='white', bbox_inches='tight')
+    fig.savefig(output_path, facecolor='white', bbox_inches='tight', dpi=300)
