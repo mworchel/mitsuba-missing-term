@@ -9,3 +9,11 @@ def disable_ticks(ax):
     ax.axes.get_xaxis().set_ticks([])
     ax.axes.get_yaxis().set_ticks([])
     return ax
+
+def set_siggraph_font():
+    import matplotlib as mpl
+    font = {'family': 'sans-serif',
+        'sans-serif': 'Linux Biolinum'}
+    mpl.rc('font', **font)
+    mpl.rc('text', **{'usetex': False})
+    mpl.rc('mathtext', fontset='custom', rm='Linux Biolinum', it='Linux Biolinum:italic', bf='Linux Biolinum:bold')
