@@ -25,7 +25,7 @@ def set_siggraph_font():
     mpl.rc('text', **{'usetex': False})
     mpl.rc('mathtext', fontset='custom', rm='Linux Biolinum', it='Linux Biolinum:italic', bf='Linux Biolinum:bold')
 
-def generate_figure(integrators: List[str], data: dict, output_path: Path, grad_projection: str='red', square_r_setting_3: bool = True):
+def generate_figure(integrators: List[str], data: dict, output_path: Path, grad_projection: str='red', square_r_setting_3: bool = True, quantile: float = 0.89):
     grad_projection_fn = None
     if grad_projection == 'red':
         grad_projection_fn = lambda grad: grad[...,0]
@@ -57,10 +57,10 @@ def generate_figure(integrators: List[str], data: dict, output_path: Path, grad_
                 grad_fd = grad_projection_fn(setting_data[j][2])
                 ax_fd = disable_ticks(fig.add_subplot(gs[i, j + 1]))
                 # init range 
-                r = np.quantile(np.abs(grad_fd), 0.89)
+                r = np.quantile(np.abs(grad_fd), quantile)
                 # last setting gets a different range
                 if square_r_setting_3 and (i == 2):
-                    r = np.quantile(np.abs(grad_fd), 0.89)*2
+                    r = np.quantile(np.abs(grad_fd), quantile)*2
                 #r = np.maximum(r, 1)
                 ax_fd.imshow(grad_fd, cmap='coolwarm', vmin=-r, vmax=r)
 
