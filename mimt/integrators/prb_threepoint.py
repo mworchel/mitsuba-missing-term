@@ -106,7 +106,7 @@ class PRBThreePointIntegrator(RBIntegrator):
                 result_img = film.develop()
 
                 # Propagate the gradients to the image tensor
-                dr.forward_to(result_img, flags=dr.ADFlag.Default | dr.ADFlag.AllowNoGrad)
+                dr.forward_to(result_img, flags=dr.ADFlag.ClearNone | dr.ADFlag.AllowNoGrad)
                 first_hit = dr.grad(result_img)
 
         # Explicitly delete any remaining unused variables
@@ -296,7 +296,6 @@ class PRBThreePointIntegrator(RBIntegrator):
         prev_ray        = mi.Ray3f(dr.detach(ray))
         prev_bsdf_pdf   = mi.Float(1.0)
         prev_bsdf_delta = mi.Bool(True)
-        prev_G          = mi.Float(1.0)
         
         while dr.hint(active,
                       max_iterations=self.max_depth,
@@ -326,7 +325,7 @@ class PRBThreePointIntegrator(RBIntegrator):
 
             # Compute MIS weight for emitter sample from previous bounce
             ds = mi.DirectionSample3f(scene, si=si, ref=prev_si)
-            
+
             si_pdf = scene.pdf_emitter_direction(prev_si, ds, ~prev_bsdf_delta)
             
             
@@ -363,7 +362,7 @@ class PRBThreePointIntegrator(RBIntegrator):
             # If so, randomly sample an emitter without derivative tracking.
             ds_em, em_weight = scene.sample_emitter_direction(si, sampler.next_2d(), True, active_em)
             active_em &= (ds_em.pdf != 0.0)
-            
+
             with dr.resume_grad(when=not primal):
                 # We need to recompute the sample with follow shape so it is a detached uv sample
                 si_em = scene.ray_intersect(dr.detach(si.spawn_ray(ds_em.d)), 
@@ -401,12 +400,12 @@ class PRBThreePointIntegrator(RBIntegrator):
                 Lr_dir = β * mis_em * bsdf_value_em * em_weight
 
 
-            # ------------------ BSDF sampling -------------------
+            # ------------------ Detached BSDF sampling -------------------
 
             bsdf_sample, bsdf_weight = bsdf.sample(bsdf_ctx, si,
-                                                sampler.next_1d(),
-                                                sampler.next_2d(),
-                                                active_next)
+                                                   sampler.next_1d(),
+                                                   sampler.next_2d(),
+                                                   active_next)
 
             # ---- Update loop variables based on current interaction -----
 
@@ -502,12 +501,12 @@ class PRBThreePointIntegrator(RBIntegrator):
             active = active_next
             prev_ray = ray
             ray = ray_next
-    
+
         return (
             L if primal else δL, # Radiance/differential radiance
-            (depth != 0),        # Ray validity flag for alpha blending
-            [],                  # Empty typle of AOVs
-            L                    # State for the differential phase
+            depth != 0,          # Ray validity flag for alpha blending
+            [],                  # Empty tuple of AOVs.
+            L                    # State for the differential phase (uneccessary)
         )
 
 mi.register_integrator("prb_threepoint", lambda props: PRBThreePointIntegrator(props))
