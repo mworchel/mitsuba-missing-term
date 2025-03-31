@@ -305,10 +305,12 @@ class PRBThreePointIntegrator(RBIntegrator):
             with dr.resume_grad(when=not primal):
                 prev_si = scene.ray_intersect(prev_ray,
                                          ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
-                                         coherent=(depth == 0))
+                                         coherent=False,
+                                         active=(depth != 0) & active_next)
                 si = scene.ray_intersect(ray,
                                          ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
-                                         coherent=(depth == 0))
+                                         coherent=(depth == 0),
+                                         active=active_next)
                 # si.wi has a gradient as prev_si might move with pi
                 # if dr.hint(not primal, mode='scalar'):
                 si.wi = dr.select((depth == 0) | ~si.is_valid(), si.wi, si.to_local(dr.normalize(prev_si.p - si.p)))
