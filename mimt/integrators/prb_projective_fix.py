@@ -129,7 +129,7 @@ class PathProjectiveFixIntegrator(PathProjectiveIntegrator):
             raise Exception(f"Project seed must be one of 'both', 'bsdf', "
                             f"'emitter', got '{self.project_seed}'")
 
-    def RB_render_forward(self: mi.SamplingIntegrator,
+    def rb_render_forward(self: mi.SamplingIntegrator,
                        scene: mi.Scene,
                        params: Any,
                        sensor: Union[int, mi.Sensor] = 0,
@@ -236,7 +236,7 @@ class PathProjectiveFixIntegrator(PathProjectiveIntegrator):
         
         return result_grad + first_hit
     
-    def RB_render_backward(self: mi.SamplingIntegrator,
+    def rb_render_backward(self: mi.SamplingIntegrator,
                         scene: mi.Scene,
                         params: Any,
                         grad_in: mi.TensorXf,
@@ -406,7 +406,7 @@ class PathProjectiveFixIntegrator(PathProjectiveIntegrator):
         
         # Continuous derivative (if RB is used)
         if self.radiative_backprop and sppc > 0:
-            result_grad += self.RB_render_forward(scene, None, sensor, seed, sppc)
+            result_grad += self.rb_render_forward(scene, None, sensor, seed, sppc)
 
         # Discontinuous derivative (and the non-RB continuous derivative)
         if sppp > 0 or sppi > 0 or \
@@ -442,7 +442,7 @@ class PathProjectiveFixIntegrator(PathProjectiveIntegrator):
 
         # Continuous derivative (if RB is used)
         if self.radiative_backprop and sppc > 0:
-            RBIntegrator.render_backward(self, scene, None, grad_in, sensor, seed, sppc)
+            self.rb_render_backward(scene, None, grad_in, sensor, seed, sppc)
 
         # Discontinuous derivative (and the non-RB continuous derivative)
         if sppp > 0 or sppi > 0 or \
