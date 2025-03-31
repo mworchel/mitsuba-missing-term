@@ -766,6 +766,6 @@ class PathProjectiveFixIntegrator(PathProjectiveIntegrator):
     #         [dr.detach(ray_seed), active_seed] if project else L
     #     )
 
-mi.register_integrator("prb_projective_temp", lambda props: PathProjectiveFixIntegrator(props))
+mi.register_integrator("prb_projective_fix", lambda props: PathProjectiveFixIntegrator(props))
 
 del PSIntegrator
