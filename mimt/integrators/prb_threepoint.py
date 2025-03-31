@@ -106,7 +106,7 @@ class PRBThreePointIntegrator(RBIntegrator):
                 result_img = film.develop()
 
                 # Propagate the gradients to the image tensor
-                dr.forward_to(result_img, flags=dr.ADFlag.ClearNone | dr.ADFlag.AllowNoGrad)
+                dr.forward_to(result_img, flags=dr.ADFlag.Default | dr.ADFlag.AllowNoGrad)
                 first_hit = dr.grad(result_img)
 
         # Explicitly delete any remaining unused variables
