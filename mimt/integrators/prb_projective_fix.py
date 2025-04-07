@@ -128,6 +128,10 @@ class PathProjectiveFixIntegrator(PathProjectiveIntegrator):
         if self.project_seed not in ['both', 'bsdf', 'emitter']:
             raise Exception(f"Project seed must be one of 'both', 'bsdf', "
                             f"'emitter', got '{self.project_seed}'")
+        
+        # Indicator if interior derivative should be included
+        # (sppc cannot be used to disable it if spp is overwritten in runtime)
+        self.include_interior = props.get('include_interior', True)
 
     def rb_render_forward(self: mi.SamplingIntegrator,
                        scene: mi.Scene,
@@ -403,9 +407,9 @@ class PathProjectiveFixIntegrator(PathProjectiveIntegrator):
         sppc = self.override_spp(self.sppc, spp, sampler_spp)
         sppp = self.override_spp(self.sppp, spp, sampler_spp)
         sppi = self.override_spp(self.sppi, spp, sampler_spp)
-        
+
         # Continuous derivative (if RB is used)
-        if self.radiative_backprop and sppc > 0:
+        if self.include_interior and self.radiative_backprop and sppc > 0:
             result_grad += self.rb_render_forward(scene, None, sensor, seed, sppc)
 
         # Discontinuous derivative (and the non-RB continuous derivative)
@@ -441,7 +445,7 @@ class PathProjectiveFixIntegrator(PathProjectiveIntegrator):
         sppi = self.override_spp(self.sppi, spp, sampler_spp)
 
         # Continuous derivative (if RB is used)
-        if self.radiative_backprop and sppc > 0:
+        if self.include_interior and self.radiative_backprop and sppc > 0:
             self.rb_render_backward(scene, None, grad_in, sensor, seed, sppc)
 
         # Discontinuous derivative (and the non-RB continuous derivative)
@@ -457,6 +461,104 @@ class PathProjectiveFixIntegrator(PathProjectiveIntegrator):
             dr.traverse(dr.ADMode.Backward)
 
         dr.eval()
+
+    def render_ad(self,
+                  scene: mi.Scene,
+                  sensor: Union[int, mi.Sensor],
+                  seed: mi.UInt32,
+                  spp: int,
+                  mode: dr.ADMode) -> mi.TensorXf:
+        """
+        Renders and accumulates the outputs of the primarily visible
+        discontinuities, indirect discontinuities and continuous derivatives.
+        It outputs an attached tensor which should subsequently be traversed by
+        a call to `dr.forward`/`dr.backward`/`dr.enqueue`/`dr.traverse`.
+
+        Note: The continuous derivatives are only attached if
+        `radiative_backprop` is `False`. When using RB for the continuous
+        derivatives it should be manually added to the gradient obtained by
+        traversing the result of this method.
+        """
+        if isinstance(sensor, int):
+            sensor = scene.sensors()[sensor]
+
+        film = sensor.film()
+        aovs = self.aov_names()
+        shape = (film.crop_size()[1],
+                 film.crop_size()[0],
+                 film.base_channels_count() + len(aovs))
+        result_img = dr.zeros(mi.TensorXf, shape=shape)
+
+        sampler_spp = sensor.sampler().sample_count()
+        sppc = self.override_spp(self.sppc, spp, sampler_spp)
+        sppp = self.override_spp(self.sppp, spp, sampler_spp)
+        sppi = self.override_spp(self.sppi, spp, sampler_spp)
+
+        silhouette_shapes = scene.silhouette_shapes()
+        has_silhouettes = len(silhouette_shapes) > 0
+
+        # This isn't serious, so let's just warn once
+        if has_silhouettes and not film.sample_border() and self.sample_border_warning:
+            self.sample_border_warning = False
+            mi.Log(mi.LogLevel.Warn,
+                "PSIntegrator detected the potential for image-space "
+                "motion due to differentiable shape parameters. To correctly "
+                "account for shapes entering or leaving the viewport, it is "
+                "recommended that you set the film's 'sample_border' parameter "
+                "to True.")
+
+        # Primarily visible discontinuous derivative
+        if sppp > 0 and has_silhouettes:
+            with dr.suspend_grad():
+                self.proj_detail.init_primarily_visible_silhouette(scene, sensor)
+
+            sampler, spp = self.prepare(sensor, 0xffffffff ^ seed, sppp, aovs)
+            result_img += self.render_primarily_visible_silhouette(scene, sensor, sampler, spp)
+
+        # Indirect discontinuous derivative
+        if sppi > 0 and has_silhouettes:
+            with dr.suspend_grad():
+                self.proj_detail.init_indirect_silhouette(scene, sensor, 0xafafafaf ^ seed)
+
+            sampler, spp = self.prepare(sensor, 0xaa00aa00 ^ seed, sppi, aovs)
+            result_img += self.render_indirect_silhouette(scene, sensor, sampler, spp)
+
+        ## Continuous derivative (only if radiative backpropagation is not used)
+        if sppc > 0 and (not self.radiative_backprop):
+            with dr.suspend_grad():
+                sampler, spp = self.prepare(sensor, seed, sppc, aovs)
+                ray, weight, pos = self.sample_rays(scene, sensor, sampler)
+
+                # Launch the Monte Carlo sampling process in differentiable mode
+                L, valid, aovs, _ = self.sample(
+                    mode     = mode,
+                    scene    = scene,
+                    sampler  = sampler,
+                    ray      = ray,
+                    depth    = 0,
+                    δL       = None,
+                    state_in = None,
+                    active   = mi.Bool(True),
+                    project  = False,
+                    si_shade = None
+                )
+
+            block = film.create_block()
+            block.set_coalesce(block.coalesce() and sppc >= 4)
+
+            ADIntegrator._splat_to_block(
+                block, film, pos,
+                value=L * weight,
+                weight=1.0,
+                alpha=dr.select(valid, mi.Float(1), mi.Float(0)),
+                aovs=[aov * weight for aov in aovs],
+                wavelengths=ray.wavelengths
+            )
+
+            film.put_block(block)
+            result_img += film.develop()
+
+        return result_img
 
     # @dr.syntax
     # def sample(self,
