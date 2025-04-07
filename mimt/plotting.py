@@ -1,10 +1,11 @@
+from collections.abc import Iterable
 import drjit as dr
 import mitsuba as mi
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 FIGURE_LINEWIDTH        = 237.13594/71.959
 FIGURE_WIDTH_ONE_COLUMN = 2*FIGURE_LINEWIDTH
@@ -25,7 +26,7 @@ def set_siggraph_font():
     mpl.rc('text', **{'usetex': False})
     mpl.rc('mathtext', fontset='custom', rm='Linux Biolinum', it='Linux Biolinum:italic', bf='Linux Biolinum:bold')
 
-def generate_figure(integrators: List[str], data: dict, output_path: Path, grad_projection: str='red', square_r_setting_3: bool = True, quantile: float = 0.89):
+def generate_figure(integrators: List[str], data: dict, output_path: Path, grad_projection: str='red', square_r_setting_3: bool = True, quantile: float = 0.89, labels: Optional[List[str]] = None):
     grad_projection_fn = None
     if grad_projection == 'red':
         grad_projection_fn = lambda grad: grad[...,0]
@@ -45,6 +46,7 @@ def generate_figure(integrators: List[str], data: dict, output_path: Path, grad_
     r = None
     for i, setting in enumerate(data.keys()):
         setting_data = data[setting]
+        q = quantile[i] if isinstance(quantile, Iterable) else quantile
         for j, integrator in enumerate(integrators):
             assert setting_data[j][0] == integrator
             if j == 0:
@@ -56,11 +58,11 @@ def generate_figure(integrators: List[str], data: dict, output_path: Path, grad_
                 # Show FD of reference primal image
                 grad_fd = grad_projection_fn(setting_data[j][2])
                 ax_fd = disable_ticks(fig.add_subplot(gs[i, j + 1]))
-                # init range 
-                r = np.quantile(np.abs(grad_fd), quantile)
+                # init range
+                r = np.quantile(np.abs(grad_fd), q)
                 # last setting gets a different range
                 if square_r_setting_3 and (i == 2):
-                    r = np.quantile(np.abs(grad_fd), quantile)*2
+                    r = np.quantile(np.abs(grad_fd), q)*2
                 #r = np.maximum(r, 1)
                 ax_fd.imshow(grad_fd, cmap='coolwarm', vmin=-r, vmax=r)
 
@@ -76,7 +78,8 @@ def generate_figure(integrators: List[str], data: dict, output_path: Path, grad_
             ax_fw.imshow(grad_fw, cmap='coolwarm', vmin=-r, vmax=r)
 
             if i == num_settings - 1:
-                ax_fw.set_xlabel(f"{integrator}", fontsize=12)
+                integrator_label = labels[j] if labels is not None else f"{integrator}"
+                ax_fw.set_xlabel(integrator_label, fontsize=12)
 
     plt.show()
 
