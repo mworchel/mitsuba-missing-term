@@ -1,5 +1,5 @@
 matplotlib
-mitsuba==3.6.0
+mitsuba==3.6.4
 numpy
 tqdm
 ipywidgets
