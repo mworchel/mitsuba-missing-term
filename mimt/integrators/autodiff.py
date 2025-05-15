@@ -81,9 +81,10 @@ class AutoDiffIntegrator(ADIntegrator):
                 with dr.suspend_grad():
                     ds, em_weight = scene.sample_emitter_direction(si, sampler.next_2d(), True, active_em)
 
-                # Retrace the ray towards the emitter because ds is directly sampled
-                # from the emitter shape instead of tracing a ray against it.
-                # This contradicts the definition of "sampling of *directions*"
+                # The emitter sample is directly drawn from the surface of an emitter,
+                # but this contradicts the definition of "sampling of directions": 
+                # the sample position should move on the emitter surface when the ray origin (`si`) moves.
+                # Therefore, retrace the corresponding ray to attach the intersection point.
                 si_em       = scene.ray_intersect(si.spawn_ray(ds.d), active=active_em)
                 ds_attached = mi.DirectionSample3f(scene, si_em, ref=si)
                 ds_attached.pdf, ds_attached.delta, ds_attached.uv, ds_attached.n = (ds.pdf, ds.delta, si_em.uv, si_em.n)
