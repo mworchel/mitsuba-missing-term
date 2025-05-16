@@ -165,7 +165,7 @@ class ThreePointIntegrator(ADIntegrator):
             si = scene.ray_intersect(dr.detach(ray),
                                     ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
                                     coherent=(depth == 0))
-            si.wi = dr.select((depth == 0) | ~si.is_valid(), si.wi, si.to_local(dr.normalize(ray.o - si.p))) 
+            si.wi = dr.select(~si.is_valid(), si.wi, si.to_local(dr.normalize(ray.o - si.p))) 
 
             if it == 0:
                 first_si = si

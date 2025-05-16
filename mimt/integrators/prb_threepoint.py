@@ -313,8 +313,8 @@ class PRBThreePointIntegrator(RBIntegrator):
                                          active=active_next)
                 # si.wi has a gradient as prev_si might move with pi
                 # if dr.hint(not primal, mode='scalar'):
-                si.wi = dr.select((depth == 0) | ~si.is_valid(), si.wi, si.to_local(dr.normalize(prev_si.p - si.p)))
-                    # ray.o = prev_si.p
+                prev_p = dr.select(depth == 0, ray.o, prev_si.p)
+                si.wi  = dr.select(~si.is_valid(), si.wi, si.to_local(dr.normalize(prev_p - si.p)))
 
             # Get the BSDF, potentially computes texture-space differentials
             bsdf = si.bsdf(ray)
