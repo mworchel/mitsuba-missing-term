@@ -197,8 +197,10 @@ class ThreePointIntegrator(ADIntegrator):
                 )
 
             # Transform the solid angle sample into a surface sample
-            D = solid_to_surface_reparam_det(si, ray.o)
-            β *= det_over_det(D)
+            # (the reparameterization for the first intersection happens on the caller side)
+            if it > 0:
+                D = solid_to_surface_reparam_det(si, ray.o)
+                β *= det_over_det(D)
 
             Le = β * mis * ds.emitter.eval(si, active_next)
             L += Le
