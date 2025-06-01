@@ -133,6 +133,9 @@ class PathProjectiveFixIntegrator(PathProjectiveIntegrator):
         # (sppc cannot be used to disable it if spp is overwritten in runtime)
         self.include_interior = props.get('include_interior', True)
 
+        # Indicator if the boundary derivative should be included
+        self.include_boundary = props.get('include_boundary', True)
+
     def rb_render_forward(self: mi.SamplingIntegrator,
                        scene: mi.Scene,
                        params: Any,
@@ -413,8 +416,8 @@ class PathProjectiveFixIntegrator(PathProjectiveIntegrator):
             result_grad += self.rb_render_forward(scene, None, sensor, seed, sppc)
 
         # Discontinuous derivative (and the non-RB continuous derivative)
-        if sppp > 0 or sppi > 0 or \
-           (sppc > 0 and not self.radiative_backprop):
+        if (self.include_boundary and (sppp > 0 or sppi > 0)) or \
+           (self.include_interior and sppc > 0 and not self.radiative_backprop):
 
             # Compute an image with all derivatives attached
             ad_img = self.render_ad(scene, sensor, seed, spp, dr.ADMode.Forward)
@@ -508,7 +511,7 @@ class PathProjectiveFixIntegrator(PathProjectiveIntegrator):
                 "to True.")
 
         # Primarily visible discontinuous derivative
-        if sppp > 0 and has_silhouettes:
+        if self.include_boundary and sppp > 0 and has_silhouettes:
             with dr.suspend_grad():
                 self.proj_detail.init_primarily_visible_silhouette(scene, sensor)
 
@@ -516,7 +519,7 @@ class PathProjectiveFixIntegrator(PathProjectiveIntegrator):
             result_img += self.render_primarily_visible_silhouette(scene, sensor, sampler, spp)
 
         # Indirect discontinuous derivative
-        if sppi > 0 and has_silhouettes:
+        if self.include_boundary and sppi > 0 and has_silhouettes:
             with dr.suspend_grad():
                 self.proj_detail.init_indirect_silhouette(scene, sensor, 0xafafafaf ^ seed)
 
@@ -524,7 +527,7 @@ class PathProjectiveFixIntegrator(PathProjectiveIntegrator):
             result_img += self.render_indirect_silhouette(scene, sensor, sampler, spp)
 
         ## Continuous derivative (only if radiative backpropagation is not used)
-        if sppc > 0 and (not self.radiative_backprop):
+        if self.include_interior and sppc > 0 and (not self.radiative_backprop):
             with dr.suspend_grad():
                 sampler, spp = self.prepare(sensor, seed, sppc, aovs)
                 ray, weight, pos = self.sample_rays(scene, sensor, sampler)
