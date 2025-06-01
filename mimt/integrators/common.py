@@ -57,3 +57,39 @@ def sensor_to_surface_reparam_det(sensor: mi.Sensor, si: mi.SurfaceInteraction3f
 
     return near_factor * n_dot_d / (v_dot_d * v_dot_d * v_dot_d)
 
+def film_to_sensor_reparam_det(sensor: mi.Sensor):
+    near_clip = sensor.near_clip()
+    x_fov = mi.traverse(sensor)["x_fov"][0]
+    film = sensor.film()
+
+    camera_to_sample = mi.perspective_projection(
+        film.size(),
+        film.crop_size(),
+        film.crop_offset(),
+        x_fov,
+        near_clip,
+        sensor.far_clip()
+    )
+
+    # The determinant is the ratio of sensor area in "film space"
+    # to the sensor area in camera space. The former is 1 because
+    # the sensor is a unit square [0, 1]^2 in film space. Assuming
+    # that the sensor is centered around the camera's optical axis, 
+    # the sensor area in camera space can be determined by measuring
+    # the axis-aligned offsets of the top-left film position (0, 0) 
+    # in camera space (p_min = inverse(P) * (0, 0, 0, 1)^T):
+    #
+    # p_min___________ _
+    #     |           || abs(p_min[1]
+    #     |     ·     |-
+    #     |___________|
+    #     |-----|
+    #  abs(p_min[0])
+    # 
+    # The sensor area then is
+    # 2*abs(p_min[0]) * 2*abs(p_min[1]) = 4 * abs(p_min[0] * p_min[1])
+    sample_to_camera = camera_to_sample.inverse()
+    p_min = sample_to_camera @ mi.Point3f(0, 0, 0)
+    sensor_area = 4 * dr.abs(p_min[0] * p_min[1])
+    
+    return dr.rcp(sensor_area) # = film_area (=1) / sensor_area
