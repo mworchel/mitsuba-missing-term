@@ -7,7 +7,7 @@ from mitsuba.ad.integrators.common import ADIntegrator, mis_weight
 import gc
 from typing import Any, List, Tuple, Union
 
-from .common import det_over_det, sensor_to_surface_reparam_det
+from .common import det_over_det, solid_to_surface_reparam_det, sensor_to_surface_reparam_det
 
 class ThreePointIntegrator(ADIntegrator):
     def render_forward(self: mi.SamplingIntegrator,
