@@ -26,5 +26,9 @@ def sensor_to_solid_reparam_det(sensor: mi.Sensor, si: mi.SurfaceInteraction3f):
     """
     sensor_pos = sensor.world_transform() @ mi.Point3f(0)
     sensor_dir = sensor.world_transform() @ mi.Vector3f(0, 0, 1)
-    d = dr.dot(dr.normalize(si.p - sensor_pos), sensor_dir)
-    return dr.select(si.is_valid(), 1/(d*d*d), 1.)
+    
+    near_clip = sensor.near_clip()
+
+    # Jacobian determinant (sensor to solid angle)
+    cos_phi = dr.abs_dot(dr.normalize(si.p - sensor_pos), sensor_dir)
+    return dr.select(si.is_valid(), dr.square(near_clip) / cos_phi*cos_phi*cos_phi, 1.)
