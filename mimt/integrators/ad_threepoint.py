@@ -7,7 +7,7 @@ from mitsuba.ad.integrators.common import ADIntegrator, mis_weight
 import gc
 from typing import Any, List, Tuple, Union
 
-from .common import det_over_det, solid_to_surface_reparam_det, sensor_to_solid_reparam_det
+from .common import det_over_det, sensor_to_surface_reparam_det
 
 class ThreePointIntegrator(ADIntegrator):
     def render_forward(self: mi.SamplingIntegrator,
@@ -46,7 +46,7 @@ class ThreePointIntegrator(ADIntegrator):
 
                 pos = dr.select(valid, sensor.sample_direction(si, [0, 0], active=valid)[0].uv, pos)
 
-                D = sensor_to_solid_reparam_det(sensor, si) * solid_to_surface_reparam_det(si, ray.o)
+                D = sensor_to_surface_reparam_det(sensor, si, ignore_near_plane=True)
 
                 # Accumulate into the image block
                 ADIntegrator._splat_to_block(
@@ -105,7 +105,7 @@ class ThreePointIntegrator(ADIntegrator):
 
                 pos = dr.select(valid, sensor.sample_direction(si, [0, 0], active=valid)[0].uv, pos)
 
-                D  = sensor_to_solid_reparam_det(sensor, si) * solid_to_surface_reparam_det(si, ray.o)
+                D = sensor_to_surface_reparam_det(sensor, si, ignore_near_plane=True)
 
                 # Accumulate into the image block
                 ADIntegrator._splat_to_block(
