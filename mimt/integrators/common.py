@@ -55,7 +55,9 @@ def sensor_to_surface_reparam_det(sensor: mi.Sensor, si: mi.SurfaceInteraction3f
     # (this should improve numerical stability for very close near planes)
     near_factor = 1 if ignore_near_plane else dr.square(sensor.near_clip())
 
-    return near_factor * n_dot_d / (v_dot_d * v_dot_d * v_dot_d)
+    det = near_factor * n_dot_d / (v_dot_d * v_dot_d * v_dot_d) * dr.norm(dr.cross(si.dp_du, si.dp_dv))
+
+    return dr.select(si.is_valid(), det, 1.)
 
 def film_to_sensor_reparam_det(sensor: mi.Sensor):
     near_clip = sensor.near_clip()
