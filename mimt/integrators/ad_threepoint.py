@@ -199,7 +199,7 @@ class ThreePointIntegrator(ADIntegrator):
             # Transform the solid angle sample into a surface sample
             # (the reparameterization for the first intersection happens on the caller side)
             if it > 0:
-                D = solid_to_surface_reparam_det(si, prev_si.p)
+                D = solid_to_surface_reparam_det(si, prev_si.p, active=active_next)
                 β *= det_over_det(D)
 
             Le = β * mis * ds.emitter.eval(si, active_next)
@@ -228,7 +228,7 @@ class ThreePointIntegrator(ADIntegrator):
 
             # For environment emitters, `si_em` will be invalid, in which
             # case `D_em` is one, and the sample is processed as being a solid angle sample.
-            D_em = solid_to_surface_reparam_det(si_em, si.p)
+            D_em = solid_to_surface_reparam_det(si_em, si.p, active=active_em)
 
             wo_em = si.to_local(ray_em.d)
             bsdf_value_em, bsdf_pdf_em = bsdf.eval_pdf(bsdf_ctx, si, wo_em, active_em)

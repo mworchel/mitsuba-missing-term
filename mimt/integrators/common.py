@@ -4,7 +4,7 @@ import mitsuba as mi
 def det_over_det(D):
     return dr.select(D != 0, dr.replace_grad(1, D/dr.detach(D)), 0)
 
-def solid_to_surface_reparam_det(si: mi.SurfaceInteraction3f, x_prev: mi.Point3f):
+def solid_to_surface_reparam_det(si: mi.SurfaceInteraction3f, x_prev: mi.Point3f, active: mi.Bool = True):
     """ Reparameterization determinant from solid angles to surface elements
     """
 
@@ -15,7 +15,7 @@ def solid_to_surface_reparam_det(si: mi.SurfaceInteraction3f, x_prev: mi.Point3f
 
     # If the intersection point lies on an environment emitter, 
     # the surface parameterization is invalid (and si.is_valid() == False)
-    det = dr.select(si.is_valid() & (distance_squared > 0), 
+    det = dr.select(active & si.is_valid() & (distance_squared > 0), 
                     dr.norm(dr.cross(si.dp_du, si.dp_dv)) * dr.abs(cos_theta) / distance_squared, 1)
 
     return det
