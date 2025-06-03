@@ -7,6 +7,7 @@ import mitsuba as mi
 from mitsuba.ad.integrators.common import RBIntegrator, ADIntegrator, mis_weight
 import gc
 
+from .common import det_over_det, solid_to_surface_reparam_det, sensor_to_surface_reparam_det
 
 class PRBThreePointIntegrator(RBIntegrator):
 
@@ -85,21 +86,22 @@ class PRBThreePointIntegrator(RBIntegrator):
                 block.set_coalesce(block.coalesce() and spp >= 4)
                 si = scene.ray_intersect(ray,
                                          ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
-                                         coherent=mi.Bool(True))
+                                         coherent=mi.Bool(True),
+                                         active=valid)
                 pos = dr.select(valid, sensor.sample_direction(si, [0, 0], active=valid)[0].uv, pos)
-                diff = si.p-ray.o
-                dist_squared = dr.squared_norm(diff)
-                dp = dr.dot(dr.normalize(diff), si.n)
-                D = dr.select(valid, dr.norm(dr.cross(si.dp_du, si.dp_dv)) * -dp / dist_squared , 1.)
+
+                D = sensor_to_surface_reparam_det(sensor, si, ignore_near_plane=True, active=valid)
+
                 #Accumulate into the image block
                 ADIntegrator._splat_to_block(
                     block, film, pos,
-                    value=L * weight * dr.replace_grad(1, D/dr.detach(D)),
-                    weight=dr.replace_grad(1, D/dr.detach(D)),
+                    value=L * weight * det_over_det(D),
+                    weight=det_over_det(D),
                     alpha=dr.select(valid, mi.Float(1), mi.Float(0)),
                     aovs=aovs,
                     wavelengths=ray.wavelengths
                 )
+                
                 # Perform the weight division
                 film.put_block(block)
                 
@@ -221,13 +223,11 @@ class PRBThreePointIntegrator(RBIntegrator):
             with dr.resume_grad():
                 si = scene.ray_intersect(ray,
                                          ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
-                                         coherent=mi.Bool(True))
+                                         coherent=mi.Bool(True),
+                                         active=valid)
                 pos = dr.select(valid, sensor.sample_direction(si, [0, 0], active=valid)[0].uv, pos)
-                diff = si.p-ray.o
-                dist_squared = dr.squared_norm(diff)
-                dp = dr.dot(dr.normalize(diff), si.n)
-                D = dr.select(valid, dr.norm(dr.cross(si.dp_du, si.dp_dv)) * -dp / dist_squared , 1.)
 
+                D = sensor_to_surface_reparam_det(sensor, si, ignore_near_plane=True, active=valid)
 
                 # Prepare an ImageBlock as specified by the film
                 block2 = film.create_block()
@@ -238,8 +238,8 @@ class PRBThreePointIntegrator(RBIntegrator):
                 # Accumulate into the image block
                 ADIntegrator._splat_to_block(
                     block2, film, pos,
-                    value=L * weight * dr.replace_grad(1, D/dr.detach(D)),
-                    weight=dr.replace_grad(1, D/dr.detach(D)),
+                    value=L * weight * det_over_det(D),
+                    weight=det_over_det(D),
                     alpha=dr.select(valid, mi.Float(1), mi.Float(0)),
                     aovs=aovs,
                     wavelengths=ray.wavelengths
