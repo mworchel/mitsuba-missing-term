@@ -32,6 +32,8 @@ def generate_figure(integrators: List[str], data: dict, output_path: Path, grad_
         grad_projection_fn = lambda grad: grad[...,0]
     elif grad_projection == 'mean':
         grad_projection_fn = lambda grad: dr.mean(grad, axis=-1)
+    elif grad_projection is None:
+        grad_projection_fn = lambda grad: grad
     else:
         raise RuntimeError(f"Unknown gradient projection {grad_projection}")
 
@@ -58,13 +60,16 @@ def generate_figure(integrators: List[str], data: dict, output_path: Path, grad_
                 # Show FD of reference primal image
                 grad_fd = grad_projection_fn(setting_data[j][2])
                 ax_fd = disable_ticks(fig.add_subplot(gs[i, j + 1]))
-                # init range
-                r = np.quantile(np.abs(grad_fd), q)
-                # last setting gets a different range
-                if square_r_setting_3 and (i == 2):
-                    r = np.quantile(np.abs(grad_fd), q)*2
-                #r = np.maximum(r, 1)
-                ax_fd.imshow(grad_fd, cmap='coolwarm', vmin=-r, vmax=r)
+                if grad_projection is None:
+                    ax_fd.imshow(mi.Bitmap(grad_fd).convert(srgb_gamma=True))
+                else:
+                    # init range
+                    r = np.quantile(np.abs(grad_fd), q)
+                    # last setting gets a different range
+                    if square_r_setting_3 and (i == 2):
+                        r = np.quantile(np.abs(grad_fd), q)*2
+                    #r = np.maximum(r, 1)
+                    ax_fd.imshow(grad_fd, cmap='coolwarm', vmin=-r, vmax=r)
 
                 if i == num_settings - 1:
                     ax_img.set_xlabel("Image", fontsize=12)
@@ -75,7 +80,10 @@ def generate_figure(integrators: List[str], data: dict, output_path: Path, grad_
             # Show forward-mode gradient
             grad_fw = grad_projection_fn(setting_data[j][3])
             ax_fw = disable_ticks(fig.add_subplot(gs[i, j + 2]))      
-            ax_fw.imshow(grad_fw, cmap='coolwarm', vmin=-r, vmax=r)
+            if grad_projection is None:
+                ax_fw.imshow(mi.Bitmap(grad_fw).convert(srgb_gamma=True))
+            else:
+                ax_fw.imshow(grad_fw, cmap='coolwarm', vmin=-r, vmax=r)
 
             if i == num_settings - 1:
                 integrator_label = labels[j] if labels is not None else f"{integrator}"
