@@ -37,7 +37,7 @@ def sensor_to_solid_reparam_det(sensor: mi.Sensor, si: mi.SurfaceInteraction3f, 
 
     return dr.select(si.is_valid(), near_factor / cos_phi*cos_phi*cos_phi, 1.)
 
-def sensor_to_surface_reparam_det(sensor: mi.Sensor, si: mi.SurfaceInteraction3f, ignore_near_plane: bool):
+def sensor_to_surface_reparam_det(sensor: mi.Sensor, si: mi.SurfaceInteraction3f, ignore_near_plane: bool, active: mi.Bool = True):
     """ Reparameterization determinant from sensor elements to scene surface elements 
         (for perspective cameras)
     """
@@ -57,7 +57,7 @@ def sensor_to_surface_reparam_det(sensor: mi.Sensor, si: mi.SurfaceInteraction3f
 
     det = near_factor * n_dot_d / (v_dot_d * v_dot_d * v_dot_d) * dr.norm(dr.cross(si.dp_du, si.dp_dv))
 
-    return dr.select(si.is_valid(), det, 1.)
+    return dr.select(active & si.is_valid(), det, 1.)
 
 def film_to_sensor_reparam_det(sensor: mi.Sensor):
     near_clip = sensor.near_clip()

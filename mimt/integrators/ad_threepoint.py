@@ -46,7 +46,7 @@ class ThreePointIntegrator(ADIntegrator):
 
                 pos = dr.select(valid, sensor.sample_direction(si, [0, 0], active=valid)[0].uv, pos)
 
-                D = sensor_to_surface_reparam_det(sensor, si, ignore_near_plane=True)
+                D = sensor_to_surface_reparam_det(sensor, si, ignore_near_plane=True, active=valid)
 
                 # Accumulate into the image block
                 ADIntegrator._splat_to_block(
@@ -105,7 +105,7 @@ class ThreePointIntegrator(ADIntegrator):
 
                 pos = dr.select(valid, sensor.sample_direction(si, [0, 0], active=valid)[0].uv, pos)
 
-                D = sensor_to_surface_reparam_det(sensor, si, ignore_near_plane=True)
+                D = sensor_to_surface_reparam_det(sensor, si, ignore_near_plane=True, active=valid)
 
                 # Accumulate into the image block
                 ADIntegrator._splat_to_block(
