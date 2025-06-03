@@ -5,6 +5,9 @@ import mitsuba as mi
 
 from mitsuba.ad.integrators.common import ADIntegrator, mis_weight
 import gc
+from typing import Any, List, Tuple, Union
+
+from .common import det_over_det, solid_to_surface_reparam_det, sensor_to_surface_reparam_det
 
 class ThreePointIntegrator(ADIntegrator):
     def render_forward(self: mi.SamplingIntegrator,
@@ -42,14 +45,14 @@ class ThreePointIntegrator(ADIntegrator):
                 block.set_coalesce(block.coalesce() and spp >= 4)
 
                 pos = dr.select(valid, sensor.sample_direction(si, [0, 0], active=valid)[0].uv, pos)
-                dist_squared = dr.squared_norm(si.p-ray.o)
-                dp = dr.dot(ray.d, si.n)
-                D = dr.select(valid, dr.norm(dr.cross(si.dp_du, si.dp_dv)) * -dp / dist_squared , 1.)
+
+                D = sensor_to_surface_reparam_det(sensor, si, ignore_near_plane=True)
+
                 # Accumulate into the image block
                 ADIntegrator._splat_to_block(
                     block, film, pos,
-                    value=L * weight * dr.replace_grad(1, D/dr.detach(D)),
-                    weight=dr.replace_grad(1, D/dr.detach(D)),
+                    value=L * weight * det_over_det(D),
+                    weight=det_over_det(D),
                     alpha=dr.select(valid, mi.Float(1), mi.Float(0)),
                     aovs=aovs,
                     wavelengths=ray.wavelengths
@@ -101,14 +104,14 @@ class ThreePointIntegrator(ADIntegrator):
                 block.set_coalesce(block.coalesce() and spp >= 4)
 
                 pos = dr.select(valid, sensor.sample_direction(si, [0, 0], active=valid)[0].uv, pos)
-                dist_squared = dr.squared_norm(si.p-ray.o)
-                dp = dr.dot(ray.d, si.n)
-                D = dr.select(valid, dr.norm(dr.cross(si.dp_du, si.dp_dv)) * -dp / dist_squared , 1.)
+
+                D = sensor_to_surface_reparam_det(sensor, si, ignore_near_plane=True)
+
                 # Accumulate into the image block
                 ADIntegrator._splat_to_block(
                     block, film, pos,
-                    value=L * weight * dr.replace_grad(1, D/dr.detach(D)),
-                    weight=dr.replace_grad(1, D/dr.detach(D)),
+                    value=L * weight * det_over_det(D),
+                    weight=det_over_det(D),
                     alpha=dr.select(valid, mi.Float(1), mi.Float(0)),
                     aovs=aovs,
                     wavelengths=ray.wavelengths
@@ -158,18 +161,19 @@ class ThreePointIntegrator(ADIntegrator):
         prev_bsdf_pdf   = mi.Float(1.0)
         prev_bsdf_delta = mi.Bool(True)
         
+        # Compute the first intersection point and adapt the directions to follow the shape
+        # (this could also use preliminary interactions, but we would like to only use `ray_intersect`)
+        si = scene.ray_intersect(dr.detach(ray),
+                                 ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
+                                 coherent=mi.Bool(True),
+                                 active=active)
+        ray.d = dr.select(si.is_valid(), dr.normalize(si.p - ray.o), ray.d)
+        si.wi = dr.select(si.is_valid(), si.to_local(-ray.d), si.wi) 
+
+        first_si = si
 
         for it in range(self.max_depth):
             active_next = mi.Bool(active)
-
-            si = scene.ray_intersect(dr.detach(ray),
-                                    ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
-                                    coherent=(depth == 0))
-            si.wi = dr.select(~si.is_valid(), si.wi, si.to_local(dr.normalize(ray.o - si.p))) 
-
-            if it == 0:
-                first_si = si
-            
 
             # Get the BSDF, potentially computes texture-space differentials
             bsdf = si.bsdf(ray)
@@ -183,35 +187,25 @@ class ThreePointIntegrator(ADIntegrator):
             # Compute MIS weight for emitter sample from previous bounce
             ds = mi.DirectionSample3f(scene, si=si, ref=prev_si)
 
-            si_pdf = scene.pdf_emitter_direction(prev_si, ds, ~prev_bsdf_delta)
-            dr.disable_grad(si_pdf)
-            
-            # Adopt the pdf as ds.pdf includes the inv geometry term, 
-            # and prev_bsdf_pdf does not contain the geometry term.
-            # -> We need to multiply both with the geometry term:
-            dist_squared = dr.squared_norm(si.p-ray.o)
-            dp = dr.dot(ds.d, ds.n)
-            # For environment emitters, si.is_valid() will be false and
-            # the local frame (dp_du, dp_dv) is invalid, but they should still contribute
-            D = dr.select(active_next & si.is_valid(), dr.norm(dr.cross(si.dp_du, si.dp_dv)) * -dp / dist_squared, 1.)
+            # Compute MIS weight but don't bother differentiating it (detached sampling)
+            with dr.suspend_grad():
+                si_pdf = scene.pdf_emitter_direction(prev_si, ds, ~prev_bsdf_delta)
+                # Since D is contained in both pdfs it cancels in the MIS weight
+                mis = mis_weight(
+                    prev_bsdf_pdf,
+                    si_pdf,
+                )
 
-            # MW: For completeness, include multiplication by D (but it cancels)
-            mis = mis_weight(
-                prev_bsdf_pdf*D,
-                si_pdf*D
-            )
-            # The first samples are sampled from screen space and not solid angles
-            # -> We need to adopt the mis weight
-            mis = dr.select((depth == 0), 1, mis)
-            # D = dr.select((depth == 0), 1, D)
-            if it != 0:
-                β *= dr.replace_grad(1, D/dr.detach(D))
+            # Transform the solid angle sample into a surface sample
+            # (the reparameterization for the first intersection happens on the caller side)
+            if it > 0:
+                D = solid_to_surface_reparam_det(si, prev_si.p, active=active_next)
+                β *= det_over_det(D)
 
-            #Le = β * si.emitter(scene).eval(si, active_next)
-            Le = β * dr.detach(mis) * ds.emitter.eval(si, active_next)
+            Le = β * mis * ds.emitter.eval(si, active_next)
             L += Le
 
-            # ---------------------- Attached Emitter sampling ----------------------
+            # ---------------------- Detached Emitter sampling ----------------------
 
             # Should we continue tracing to reach one more vertex?
             active_next &= (depth + 1 < self.max_depth) & si.is_valid()
@@ -221,82 +215,70 @@ class ThreePointIntegrator(ADIntegrator):
 
             # If so, randomly sample an emitter with derivative tracking.
             ds_em, em_weight = scene.sample_emitter_direction(si, sampler.next_2d(), True, active_em)
-            #em_weight /= D_em
-            em_weight *= dr.replace_grad(1, ds_em.pdf/dr.detach(ds_em.pdf))
 
             active_em &= (ds_em.pdf != 0.0)
             
-            # We need to recompute the sample just for si_em.dp_du, si_em.dp_dv
-            # si_em should be equivalent to ds_em
-            si_em = scene.ray_intersect(dr.detach(si.spawn_ray(ds_em.d)), 
-                                        ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
-                                        coherent=mi.Bool(False),
-                                        active=active_em)
+            # Recompute the sample position for si_em.dp_du and si_em.dp_dv
+            ray_em = si.spawn_ray(ds_em.d)
+            si_em  = scene.ray_intersect(dr.detach(ray_em), 
+                                         ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
+                                         coherent=mi.Bool(False),
+                                         active=active_em)
+            ray_em.d = dr.select(si_em.is_valid(), dr.normalize(si_em.p - si.p), ray_em.d)
 
-            diff_em = ds_em.p - si.p
-            ds_em.d = dr.normalize(diff_em)
-            wo = si.to_local(ds_em.d)
-            bsdf_value_em, bsdf_pdf_em = bsdf.eval_pdf(bsdf_ctx, si, wo, active_em)
+            # For environment emitters, `si_em` will be invalid, in which
+            # case `D_em` is one, and the sample is processed as being a solid angle sample.
+            D_em = solid_to_surface_reparam_det(si_em, si.p, active=active_em)
 
-            # This mis weight is wrong:
-            # mis_em = dr.select(ds_em.delta, 1, mis_weight(ds_em.pdf, bsdf_pdf_em))
+            wo_em = si.to_local(ray_em.d)
+            bsdf_value_em, bsdf_pdf_em = bsdf.eval_pdf(bsdf_ctx, si, wo_em, active_em)
 
-            # ds_em.pdf includes the inv geometry term, 
-            # and bsdf_pdf_em does not contain the geometry term.
-            # -> We need to multiply both with the geometry term:
-            # dp_em = dr.dot(ds_em.d, ds_em.n)
-            dp_em = dr.dot(ds_em.d, ds_em.n)
-            dist_squared_em = dr.squared_norm(diff_em)
-            # For environment emitters, si.is_valid() will be false and
-            # the local frame (dp_du, dp_dv) is invalid, but they should still contribute
-            D_em = dr.select(active_em & si_em.is_valid(), dr.norm(dr.cross(si_em.dp_du, si_em.dp_dv)) * -dp_em / dist_squared_em, 1.)
-            # MW: For completeness, include multiplication by D (but it cancels)
-            mis_em = dr.select(ds_em.delta, 1, mis_weight(ds_em.pdf*D_em, bsdf_pdf_em*D_em))
-            # Detached Sampling
-            em_weight *= dr.replace_grad(1, D_em/dr.detach(D_em))
+            # Since D is contained in both pdfs it cancels in the MIS weight
+            mis_em = dr.detach(dr.select(ds_em.delta, 1, mis_weight(ds_em.pdf, bsdf_pdf_em)))
 
-            # As we sample (uv) points and not solid angles we need to add the geometry term
-            # mis_em *
-            Lr_dir = β * dr.detach(mis_em) * bsdf_value_em * em_weight # * D_em # * mis_em
+            # Detached Sampling, the two multiplications serve the following purpose:
+            # (1) cancel the *attached* solid angle pdf contained in em_weight
+            # (2) transform the solid angle sample to a surface sample
+            em_weight *= dr.replace_grad(1, ds_em.pdf/dr.detach(ds_em.pdf)) * det_over_det(D_em)
+
+            Lr_dir = β * mis_em * bsdf_value_em * em_weight
             L += Lr_dir
 
-            # ------------------ Attached BSDF sampling -------------------
+            # ------------------ Detached BSDF sampling -------------------
 
             with dr.suspend_grad():
                 bsdf_sample, bsdf_weight = bsdf.sample(bsdf_ctx, si,
-                                                    sampler.next_1d(),
-                                                    sampler.next_2d(),
-                                                    active_next)
+                                                       sampler.next_1d(),
+                                                       sampler.next_2d(),
+                                                       active_next)
             
-            # The sampled bsdf direction and the pdf must be detached
-            # Recompute `bsdf_weight = bsdf_val / bsdf_sample.pdf` with only `bsdf_val` attached
-            # dr.disable_grad(bsdf_sample.wo, bsdf_sample.pdf)
-            # bsdf_val    = bsdf.eval(bsdf_ctx, si, bsdf_sample.wo, active_next)
-            # bsdf_weight = dr.replace_grad(bsdf_weight, dr.select(dr.neq(bsdf_sample.pdf, 0), bsdf_val / bsdf_sample.pdf, 0))
 
-            ray = si.spawn_ray(si.to_world(bsdf_sample.wo))
+            ray_next = si.spawn_ray(si.to_world(bsdf_sample.wo))
 
-            si_next = scene.ray_intersect(dr.detach(ray),
-                                            ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
-                                            coherent=mi.Bool(False))
+            # Compute the next intersection point and adapt the directions again (to follow the shape)
+            si_next = scene.ray_intersect(dr.detach(ray_next),
+                                          ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
+                                          coherent=mi.Bool(False),
+                                          active=active_next)
+            ray_next.d = dr.select(si_next.is_valid(), dr.normalize(si_next.p - si.p), ray_next.d)
+            si_next.wi = dr.select(si_next.is_valid(), si_next.to_local(-ray_next.d), si_next.wi)
             
             # Recompute 'wo' to propagate derivatives to cosine term
-            diff_next = si_next.p - si.p
-            dir_next = dr.normalize(diff_next)
-            wo = si.to_local(dir_next)
+            wo = si.to_local(ray_next.d)
+
+            # Recompute the attached BSDF weight with detached pdf (detached sampling)
             bsdf_val    = bsdf.eval(bsdf_ctx, si, wo, active_next)
-            bsdf_weight = dr.replace_grad(bsdf_weight, dr.select((bsdf_sample.pdf != 0), bsdf_val / dr.detach(bsdf_sample.pdf), 0))
+            bsdf_weight = dr.replace_grad(bsdf_weight, bsdf_val * dr.select(bsdf_sample.pdf != 0, dr.rcp(bsdf_sample.pdf), 0))
+
             # ---- Update loop variables based on current interaction -----
 
             η *= bsdf_sample.eta
-            # Detached Sampling
             β *= bsdf_weight
 
             # Information about the current vertex needed by the next iteration
             prev_si = si
             prev_bsdf_pdf = bsdf_sample.pdf
             prev_bsdf_delta = mi.has_flag(bsdf_sample.sampled_type, mi.BSDFFlags.Delta)
-            # si = si_next
 
             # -------------------- Stopping criterion ---------------------
 
@@ -315,7 +297,10 @@ class ThreePointIntegrator(ADIntegrator):
             active_next &= ~rr_active | rr_continue
             
             depth[si.is_valid()] += 1
+
             active = active_next
+            si  = si_next
+            ray = ray_next
     
         return (
             L,                   # Radiance/differential radiance
