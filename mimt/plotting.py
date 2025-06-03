@@ -26,7 +26,7 @@ def set_siggraph_font():
     mpl.rc('text', **{'usetex': False})
     mpl.rc('mathtext', fontset='custom', rm='Linux Biolinum', it='Linux Biolinum:italic', bf='Linux Biolinum:bold')
 
-def generate_figure(integrators: List[str], data: dict, output_path: Path, grad_projection: str='red', square_r_setting_3: bool = True, quantile: float = 0.89, labels: Optional[List[str]] = None):
+def generate_figure(integrators: List[str], data: dict, output_path: Path, grad_projection: str='red', square_r_setting_3: bool = True, quantile: float = 0.89, labels: Optional[List[str]] = None, exclude_first_gradient: bool = False):
     grad_projection_fn = None
     if grad_projection == 'red':
         grad_projection_fn = lambda grad: grad[...,0]
@@ -40,7 +40,14 @@ def generate_figure(integrators: List[str], data: dict, output_path: Path, grad_
     num_settings = len(list(data.keys()))
 
     n_rows = num_settings
-    n_cols = 2 + len(integrators)
+    n_cols = 2 + len(integrators) + (-1 if exclude_first_gradient else 0)
+
+    # Optional: the first integrator can be ignored in the figure.
+    #           This is useful if the first integrator merely serves the
+    #           purpose of generating the primal image and the FD reference
+    #           but is otherwise not relevant for the comparison.
+    def integrator_index_to_col(j: int):
+        return j if not exclude_first_gradient else j-1
 
     aspect = (n_rows / n_cols)
     fig = plt.figure(1, figsize=(FIGURE_WIDTH_ONE_COLUMN, aspect * FIGURE_WIDTH_ONE_COLUMN), constrained_layout=False)
@@ -77,16 +84,20 @@ def generate_figure(integrators: List[str], data: dict, output_path: Path, grad_
                 
                 ax_img.set_ylabel(setting, fontsize=12)
 
+            if (j == 0) and exclude_first_gradient:
+                continue
+
             # Show forward-mode gradient
+            col = integrator_index_to_col(j)
             grad_fw = grad_projection_fn(setting_data[j][3])
-            ax_fw = disable_ticks(fig.add_subplot(gs[i, j + 2]))      
+            ax_fw = disable_ticks(fig.add_subplot(gs[i, col + 2]))      
             if grad_projection is None:
                 ax_fw.imshow(mi.Bitmap(grad_fw).convert(srgb_gamma=True))
             else:
                 ax_fw.imshow(grad_fw, cmap='coolwarm', vmin=-r, vmax=r)
 
             if i == num_settings - 1:
-                integrator_label = labels[j] if labels is not None else f"{integrator}"
+                integrator_label = labels[col] if labels is not None else f"{integrator}"
                 ax_fw.set_xlabel(integrator_label, fontsize=12)
 
     plt.show()
