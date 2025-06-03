@@ -6,7 +6,10 @@ import mitsuba as mi
 from mitsuba.python.ad.integrators.common import ADIntegrator, RBIntegrator, PSIntegrator, mis_weight
 from mitsuba.python.ad.integrators.prb_projective import PathProjectiveIntegrator
 
+from .ad_threepoint import ThreePointIntegrator
 from .prb_threepoint import PRBThreePointIntegrator
+
+from .common import det_over_det, sensor_to_surface_reparam_det
 
 class PathProjectiveFixIntegrator(PathProjectiveIntegrator):
     r"""
@@ -121,7 +124,7 @@ class PathProjectiveFixIntegrator(PathProjectiveIntegrator):
         # Override the radiative backpropagation flag to allow the parent class
         # to call the sample() method following the logics defined in the
         # ``PRBThreePointIntegrator``
-        self.radiative_backprop = True
+        self.radiative_backprop = props.get('radiative_backprop', True)
 
         # Specify the seed ray generation strategy
         self.project_seed = props.get('project_seed', 'both')
@@ -528,38 +531,53 @@ class PathProjectiveFixIntegrator(PathProjectiveIntegrator):
 
         ## Continuous derivative (only if radiative backpropagation is not used)
         if self.include_interior and sppc > 0 and (not self.radiative_backprop):
+            if isinstance(sensor, int):
+                sensor = scene.sensors()[sensor]
+
+            film = sensor.film()
+
+            # Disable derivatives in all of the following
             with dr.suspend_grad():
-                sampler, spp = self.prepare(sensor, seed, sppc, aovs)
+                # Prepare the film and sample generator for rendering
+                sampler, spp = self.prepare(sensor, seed, spp, self.aov_names())
+
+                # Generate a set of rays starting at the sensor
                 ray, weight, pos = self.sample_rays(scene, sensor, sampler)
 
-                # Launch the Monte Carlo sampling process in differentiable mode
-                L, valid, aovs, _ = self.sample(
-                    mode     = mode,
-                    scene    = scene,
-                    sampler  = sampler,
-                    ray      = ray,
-                    depth    = 0,
-                    δL       = None,
-                    state_in = None,
-                    active   = mi.Bool(True),
-                    project  = False,
-                    si_shade = None
-                )
+                with dr.resume_grad():
+                    L, valid, aovs, si = ThreePointIntegrator.sample(self,
+                        mode     = mode,
+                        scene    = scene,
+                        sampler  = sampler,
+                        ray      = ray,
+                        active   = mi.Bool(True)
+                    )
+                    
+                    block = film.create_block(normalize=True)
+                    # Only use the coalescing feature when rendering enough samples
+                    block.set_coalesce(block.coalesce() and spp >= 4)
 
-            block = film.create_block()
-            block.set_coalesce(block.coalesce() and sppc >= 4)
+                    # Keep track of derivatives wrt. sample positions ('pos')
+                    pos = dr.select(valid, sensor.sample_direction(si, [0, 0], active=valid)[0].uv, pos)
 
-            ADIntegrator._splat_to_block(
-                block, film, pos,
-                value=L * weight,
-                weight=1.0,
-                alpha=dr.select(valid, mi.Float(1), mi.Float(0)),
-                aovs=[aov * weight for aov in aovs],
-                wavelengths=ray.wavelengths
-            )
+                    # The film-to-sensor determinant is not needed here 
+                    # because differentiation w.r.t. sensors is not supported,
+                    # so it would cancel anyway in det_over_det(D).
+                    D = sensor_to_surface_reparam_det(sensor, si, ignore_near_plane=True)
+                    
+                    # Accumulate into the image block, 
+                    # particle-style to match the measurement of the boundary term
+                    ADIntegrator._splat_to_block(
+                        block, film, pos,
+                        value=L * weight * dr.rcp(mi.ScalarFloat(spp)) * det_over_det(D),
+                        weight=0,
+                        alpha=dr.select(valid, mi.Float(1), mi.Float(0)),
+                        aovs=aovs,
+                        wavelengths=ray.wavelengths
+                    )
 
-            film.put_block(block)
-            result_img += film.develop()
+                    film.put_block(block)
+                    result_img += film.develop()
 
         return result_img
 
