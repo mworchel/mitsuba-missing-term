@@ -79,15 +79,19 @@ class PRBThreePointIntegrator(RBIntegrator):
             
             film.clear()
 
+            # The shared state contains the first intersection point
+            pi = state_out[1]
+
             with dr.resume_grad():
-                
                 block = film.create_block()
+
                 # Only use the coalescing feature when rendering enough samples
                 block.set_coalesce(block.coalesce() and spp >= 4)
-                si = scene.ray_intersect(ray,
-                                         ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
-                                         coherent=mi.Bool(True),
-                                         active=valid)
+
+                # Recompute the first intersection point with derivative tracking
+                si = pi.compute_surface_interaction(ray, 
+                                                    ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
+                                                    active=valid)
                 pos = dr.select(valid, sensor.sample_direction(si, [0, 0], active=valid)[0].uv, pos)
 
                 D = sensor_to_surface_reparam_det(sensor, si, ignore_near_plane=True, active=valid)
@@ -220,11 +224,14 @@ class PRBThreePointIntegrator(RBIntegrator):
                 active=mi.Bool(True)
             )
 
+            # The shared state contains the first intersection point
+            pi = state_out[1]
+
             with dr.resume_grad():
-                si = scene.ray_intersect(ray,
-                                         ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
-                                         coherent=mi.Bool(True),
-                                         active=valid)
+                # Recompute the first intersection point with derivative tracking
+                si = pi.compute_surface_interaction(ray, 
+                                                    ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
+                                                    active=valid)
                 pos = dr.select(valid, sensor.sample_direction(si, [0, 0], active=valid)[0].uv, pos)
 
                 D = sensor_to_surface_reparam_det(sensor, si, ignore_near_plane=True, active=valid)
@@ -270,7 +277,7 @@ class PRBThreePointIntegrator(RBIntegrator):
                sampler: mi.Sampler,
                ray: mi.Ray3f,
                δL: Optional[mi.Spectrum],
-               state_in: Optional[mi.Spectrum],
+               state_in: Optional[Tuple[mi.Spectrum, mi.PreliminaryIntersection3f]],
                active: mi.Bool,
                **kwargs # Absorbs unused arguments
     ) -> Tuple[mi.Spectrum, mi.Bool, List[mi.Float], mi.Spectrum]:
@@ -286,7 +293,7 @@ class PRBThreePointIntegrator(RBIntegrator):
         # Copy input arguments to avoid mutating the caller's state
         ray = mi.Ray3f(dr.detach(ray))
         depth = mi.UInt32(0)                          # Depth of current vertex
-        L = mi.Spectrum(0 if primal else state_in)    # Radiance accumulator
+        L = mi.Spectrum(0 if primal else state_in[0]) # Radiance accumulator
         δL = mi.Spectrum(δL if δL is not None else 0) # Differential/adjoint radiance
         β = mi.Spectrum(1)                            # Path throughput weight (includes geometry terms)
         η = mi.Float(1)                               # Index of refraction
@@ -294,27 +301,51 @@ class PRBThreePointIntegrator(RBIntegrator):
 
         # Variables caching information from the previous bounce
         prev_ray        = mi.Ray3f(dr.detach(ray))
+        prev_pi         = dr.zeros(mi.PreliminaryIntersection3f)
         prev_bsdf_pdf   = mi.Float(1.0)
         prev_bsdf_delta = mi.Bool(True)
         
+        # Output variables of the primal phase
+        pi_first = dr.zeros(mi.PreliminaryIntersection3f)
+
+        # TODO: Re-use the first intersection point from the primal phase in the adjoint phase.
+        # FIXME: This does not lead to the desired result: it seems as if `pi` isn't set or updated to `pi_next`. Why?
+        # pi = scene.ray_intersect_preliminary(ray, 
+        #                                      coherent=mi.Bool(True),
+        #                                      active=active) if primal else state_in[1]
+        # pi_first = pi
+        pi = dr.zeros(mi.PreliminaryIntersection3f)
+
         while dr.hint(active,
                       max_iterations=self.max_depth,
                       label="Path Replay Backpropagation (%s)" % mode.name):
             active_next = mi.Bool(active)
 
+            # FIXME: This is ugly. Check why setting the first `pi` from outside the loop doesn't seem to work.
+            if dr.hint(primal, mode='scalar'):
+                # Trace the first ray only in the primal phase, at depth 0
+                if (depth == 0): # <- JIT-compiled to conditional
+                    pi = scene.ray_intersect_preliminary(ray, 
+                                                         coherent=(depth == 0),
+                                                         active=active_next)
+                    pi_first = pi
+            else:
+                if (depth == 0): # <- JIT-compiled to conditional
+                    pi = state_in[1]
+
             with dr.resume_grad(when=not primal):
-                prev_si = scene.ray_intersect(prev_ray,
-                                         ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
-                                         coherent=False,
-                                         active=(depth != 0) & active_next)
-                si = scene.ray_intersect(ray,
-                                         ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
-                                         coherent=(depth == 0),
-                                         active=active_next)
-                # si.wi has a gradient as prev_si might move with pi
-                # if dr.hint(not primal, mode='scalar'):
+                prev_si = prev_pi.compute_surface_interaction(dr.detach(prev_ray),
+                                                              ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
+                                                              active=(depth != 0) & active_next)
+                
+                si = pi.compute_surface_interaction(dr.detach(ray),
+                                                    ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
+                                                    active=active_next)
+                
+
+                # Since `ray` was detached when computing `si`, we need to recompute `si.wi` to follow `prev_si`
                 prev_p = dr.select(depth == 0, ray.o, prev_si.p)
-                si.wi  = dr.select(~si.is_valid(), si.wi, si.to_local(dr.normalize(prev_p - si.p)))
+                si.wi  = dr.select(si.is_valid(), si.to_local(dr.normalize(prev_p - si.p)), si.wi)
 
             # Get the BSDF, potentially computes texture-space differentials
             bsdf = si.bsdf(ray)
@@ -330,26 +361,21 @@ class PRBThreePointIntegrator(RBIntegrator):
 
             si_pdf = scene.pdf_emitter_direction(prev_si, ds, ~prev_bsdf_delta)
             
-            
             with dr.resume_grad(when=not primal):
-                dist_squared = dr.squared_norm(si.p-prev_si.p)
-                dp = dr.dot(si.to_world(si.wi), si.n)
-                # For environment emitters, si.is_valid() will be false and
-                # the local frame (dp_du, dp_dv) is invalid, but they should still contribute
-                D = dr.select(active_next & si.is_valid(), dr.norm(dr.cross(si.dp_du, si.dp_dv)) * dp / dist_squared, 1.)
-                LD = L * dr.replace_grad(1., D/dr.detach(D))
-                LD = dr.select((depth == 0), 0, LD)           
-            
-            # MW: For completeness, include multiplication by D (but it cancels)
-            mis = mis_weight(
-                prev_bsdf_pdf*D,
-                si_pdf*D
-            )
-            # The first samples are sampled differently
-            # Ugo: neccessary? I think mis is 1 for first hit
-            mis = dr.select((depth == 0), 1, mis)
+                D = solid_to_surface_reparam_det(si, prev_si.p, active=active_next)
 
-            # remember beta contains geometry term/pdf == 1
+                # Track how the radiance emitted from this point is warped by the determinant
+                LD = dr.select(depth != 0, L * det_over_det(D), 0)       
+            
+            # Since D is contained in both pdfs it cancels in the MIS weight
+            mis = mis_weight(
+                prev_bsdf_pdf, # * D 
+                si_pdf # * D
+            )
+
+            # Remember: β contains (determinant/pdf warping) = 1, but detached
+            # β *= dr.detach(D) / dr.detach(D)
+
             with dr.resume_grad(when=not primal):
                 Le = β * mis * ds.emitter.eval(si, active_next)
 
@@ -358,6 +384,7 @@ class PRBThreePointIntegrator(RBIntegrator):
 
             # Should we continue tracing to reach one more vertex?
             active_next &= (depth + 1 < self.max_depth) & si.is_valid()
+
             # Is emitter sampling even possible on the current vertex?
             active_em = active_next & mi.has_flag(bsdf.flags(), mi.BSDFFlags.Smooth)
 
@@ -413,13 +440,9 @@ class PRBThreePointIntegrator(RBIntegrator):
 
             L = (L + Le + Lr_dir) if primal else (L - Le - Lr_dir)
 
-            wo_world = si.to_world(bsdf_sample.wo)
-
-            ray_next = si.spawn_ray(wo_world) 
             η *= bsdf_sample.eta
             # Detached Sampling
             β *= bsdf_weight
-
 
             # -------------------- Stopping criterion ---------------------
 
@@ -437,6 +460,12 @@ class PRBThreePointIntegrator(RBIntegrator):
             rr_continue = sampler.next_1d() < rr_prob
             active_next &= ~rr_active | rr_continue
 
+            ray_next = si.spawn_ray(si.to_world(bsdf_sample.wo))
+
+            pi_next = scene.ray_intersect_preliminary(ray_next,
+                                                      coherent=mi.Bool(False),
+                                                      active=active_next)
+
             # ------------------ Differential phase only ------------------
 
             if dr.hint(not primal, mode='scalar'):
@@ -449,14 +478,12 @@ class PRBThreePointIntegrator(RBIntegrator):
                     # direct/indirect terminology isn't 100% accurate here,
                     # since there may be a direct component that is weighted
                     # via multiple importance sampling)
-                    si_next = scene.ray_intersect(ray_next,
-                                                  ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
-                                                  coherent=mi.Bool(False))
+                    si_next = pi_next.compute_surface_interaction(ray_next,
+                                                                  ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
+                                                                  active=active_next)
                     
                     # Recompute 'wo' to propagate derivatives to cosine term
-                    diff_next = si_next.p - si.p
-                    dir_next = dr.normalize(diff_next)
-                    wo = si.to_local(dir_next)
+                    wo = si.to_local(dr.normalize(si_next.p - si.p))
 
                     # Re-evaluate BSDF * cos(theta) differentiably
                     bsdf_val = bsdf.eval(bsdf_ctx, si, wo, active_next & si_next.is_valid())
@@ -501,14 +528,17 @@ class PRBThreePointIntegrator(RBIntegrator):
             
             depth[si.is_valid()] += 1
             active = active_next
+
             prev_ray = ray
+            prev_pi  = pi
             ray = ray_next
+            pi  = pi_next
 
         return (
             L if primal else δL, # Radiance/differential radiance
             depth != 0,          # Ray validity flag for alpha blending
             [],                  # Empty tuple of AOVs.
-            L                    # State for the differential phase (uneccessary)
+            (L, pi_first),       # State for the differential phase
         )
 
 mi.register_integrator("prb_threepoint", lambda props: PRBThreePointIntegrator(props))
