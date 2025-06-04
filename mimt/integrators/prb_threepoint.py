@@ -386,7 +386,9 @@ class PRBThreePointIntegrator(RBIntegrator):
 
             ray_em = si.spawn_ray(ds_em.d)
             with dr.resume_grad(when=not primal):
-                # Retrace the emitter ray so that the intersection point follows the emitter (if it is a surface)
+                # Retrace the emitter ray so that the intersection point follows the emitter,
+                # and to obtain an intersection point with the differentials si_em.dp_du and si_em.dp_dv
+                # (only if the emitter is a surface)
                 si_em = scene.ray_intersect(ray_em, 
                                             ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
                                             coherent=mi.Bool(False),
