@@ -384,38 +384,33 @@ class PRBThreePointIntegrator(RBIntegrator):
             ds_em, em_weight = scene.sample_emitter_direction(si, sampler.next_2d(), True, active_em)
             active_em &= (ds_em.pdf != 0.0)
 
+            ray_em = si.spawn_ray(ds_em.d)
             with dr.resume_grad(when=not primal):
-                # We need to recompute the sample with follow shape so it is a detached uv sample
-                si_em = scene.ray_intersect(dr.detach(si.spawn_ray(ds_em.d)), 
+                # Retrace the emitter ray so that the intersection point follows the emitter (if it is a surface)
+                si_em = scene.ray_intersect(ray_em, 
                                             ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
                                             coherent=mi.Bool(False),
-                                            active=active_em)
+                                            active=active_em & mi.has_flag(ds_em.emitter.flags(), mi.EmitterFlags.Surface))
 
-                # calculate the bsdf weight (for path througput) and pdf (for mis weighting)
-                # MW: for environment emitters, we have si_em.p != ds_em.p (because si_em.p = 0)
-                # TODO: How to handle this correctly?
-                diff_em = dr.select(si_em.is_valid(), si_em.p - si.p, ds_em.p - si.p)
-                ds_em.d = dr.normalize(diff_em)
-                wo = si.to_local(ds_em.d)
-                bsdf_value_em, bsdf_pdf_em = bsdf.eval_pdf(bsdf_ctx, si, wo, active_em)
+
+                # Compute the BSDF with an outgoing direction that follows the shapes
+                # TODO: For DeltaPosition emitters (point/spot), this is not fully consistent 
+                #       with `ad_threepoint` because ds_em.p is attached there but detached here.
+                wo_em = si.to_local(dr.normalize(dr.select(si_em.is_valid(), si_em.p - si.p, ds_em.p - si.p)))
+                bsdf_value_em, bsdf_pdf_em = bsdf.eval_pdf(bsdf_ctx, si, wo_em, active_em)
                 
-                # ds_em.pdf includes the inv geometry term, 
-                # and bsdf_pdf_em does not contain the geometry term.
-                # -> We need to multiply both with the geometry term:
-                dp_em = dr.dot(ds_em.d, si_em.n)
-                dist_squared_em = dr.squared_norm(diff_em)
-                # For environment emitters, si.is_valid() will be false and
-                # the local frame (dp_du, dp_dv) is invalid, but they should still contribute
-                D_em = dr.select(active_em & si_em.is_valid(), dr.norm(dr.cross(si_em.dp_du, si_em.dp_dv)) * -dp_em / dist_squared_em , 1.) 
-                
+                # For non-surface, `si_em` will be invalid, in which case `D_em` is one, 
+                # and the sample is processed as being a solid angle sample.
+                D_em = solid_to_surface_reparam_det(si_em, si.p, active_em)
+
                 if dr.hint(not primal, mode='scalar'):
-                    # update gradient of em_weight
+                    # Evaluate the emitter with gradient tracking (with detached pdf), and transform the sample to a surface sample
                     em_val = scene.eval_emitter_direction(si, ds_em, active_em)
-                    em_weight = dr.replace_grad(em_weight, dr.select((ds_em.pdf != 0), em_val / ds_em.pdf, 0)) * dr.replace_grad(1, D_em/dr.detach(D_em))
+                    em_weight = dr.replace_grad(em_weight, dr.select((ds_em.pdf != 0), em_val / ds_em.pdf, 0)) * det_over_det(D_em)
 
 
-            # MW: For completeness, include multiplication by D (but it cancels)
-            mis_em = dr.select(ds_em.delta, 1, mis_weight(ds_em.pdf*D_em, bsdf_pdf_em*D_em))
+            # Since D is contained in both pdfs it cancels in the MIS weight
+            mis_em = dr.select(ds_em.delta, 1, mis_weight(ds_em.pdf, bsdf_pdf_em))
 
             with dr.resume_grad(when=not primal):
                 Lr_dir = β * mis_em * bsdf_value_em * em_weight
