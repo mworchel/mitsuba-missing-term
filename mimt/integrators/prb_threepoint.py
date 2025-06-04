@@ -305,33 +305,26 @@ class PRBThreePointIntegrator(RBIntegrator):
         prev_bsdf_pdf   = mi.Float(1.0)
         prev_bsdf_delta = mi.Bool(True)
         
+        # Variables caching information from the current bounce
+        pi = dr.zeros(mi.PreliminaryIntersection3f)
+
         # Output variables of the primal phase
         pi_first = dr.zeros(mi.PreliminaryIntersection3f)
-
-        # TODO: Re-use the first intersection point from the primal phase in the adjoint phase.
-        # FIXME: This does not lead to the desired result: it seems as if `pi` isn't set or updated to `pi_next`. Why?
-        # pi = scene.ray_intersect_preliminary(ray, 
-        #                                      coherent=mi.Bool(True),
-        #                                      active=active) if primal else state_in[1]
-        # pi_first = pi
-        pi = dr.zeros(mi.PreliminaryIntersection3f)
 
         while dr.hint(active,
                       max_iterations=self.max_depth,
                       label="Path Replay Backpropagation (%s)" % mode.name):
             active_next = mi.Bool(active)
 
-            # FIXME: This is ugly. Check why setting the first `pi` from outside the loop doesn't seem to work.
-            if dr.hint(primal, mode='scalar'):
-                # Trace the first ray only in the primal phase, at depth 0
-                if (depth == 0): # <- JIT-compiled to conditional
-                    pi = scene.ray_intersect_preliminary(ray, 
-                                                         coherent=(depth == 0),
-                                                         active=active_next)
-                    pi_first = pi
-            else:
-                if (depth == 0): # <- JIT-compiled to conditional
-                    pi = state_in[1]
+            # Trace the first intersection point if in primal phase, or re-use if in adjoint phase
+            # At later intersections, pi is already set to pi_next at the end of this loop
+            # TODO: This is a bit ugly, but tracing the first intersection point outside of the recorded
+            #       loop does not work. It seems as if pi is not properly updated to pi_next.
+            pi = dr.select(depth != 0, pi,
+                           scene.ray_intersect_preliminary(ray, 
+                                                           coherent=(depth == 0),
+                                                           active=active_next) if primal else state_in[1])
+            pi_first = dr.select(depth == 0, pi, pi_first)
 
             with dr.resume_grad(when=not primal):
                 prev_si = prev_pi.compute_surface_interaction(dr.detach(prev_ray),
@@ -341,7 +334,6 @@ class PRBThreePointIntegrator(RBIntegrator):
                 si = pi.compute_surface_interaction(dr.detach(ray),
                                                     ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
                                                     active=active_next)
-                
 
                 # Since `ray` was detached when computing `si`, we need to recompute `si.wi` to follow `prev_si`
                 prev_p = dr.select(depth == 0, ray.o, prev_si.p)
