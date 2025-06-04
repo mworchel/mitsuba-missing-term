@@ -7,6 +7,7 @@ import mitsuba as mi
 from mitsuba.ad.integrators.common import RBIntegrator, ADIntegrator, mis_weight
 import gc
 
+from .common import det_over_det, solid_to_surface_reparam_det, sensor_to_surface_reparam_det
 
 class PRBThreePointIntegrator(RBIntegrator):
 
@@ -78,28 +79,33 @@ class PRBThreePointIntegrator(RBIntegrator):
             
             film.clear()
 
+            # The shared state contains the first intersection point
+            pi = state_out[1]
+
             with dr.resume_grad():
-                
                 block = film.create_block()
+
                 # Only use the coalescing feature when rendering enough samples
                 block.set_coalesce(block.coalesce() and spp >= 4)
-                si = scene.ray_intersect(ray,
-                                         ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
-                                         coherent=mi.Bool(True))
+
+                # Recompute the first intersection point with derivative tracking
+                si = pi.compute_surface_interaction(ray, 
+                                                    ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
+                                                    active=valid)
                 pos = dr.select(valid, sensor.sample_direction(si, [0, 0], active=valid)[0].uv, pos)
-                diff = si.p-ray.o
-                dist_squared = dr.squared_norm(diff)
-                dp = dr.dot(dr.normalize(diff), si.n)
-                D = dr.select(valid, dr.norm(dr.cross(si.dp_du, si.dp_dv)) * -dp / dist_squared , 1.)
+
+                D = sensor_to_surface_reparam_det(sensor, si, ignore_near_plane=True, active=valid)
+
                 #Accumulate into the image block
                 ADIntegrator._splat_to_block(
                     block, film, pos,
-                    value=L * weight * dr.replace_grad(1, D/dr.detach(D)),
-                    weight=dr.replace_grad(1, D/dr.detach(D)),
+                    value=L * weight * det_over_det(D),
+                    weight=det_over_det(D),
                     alpha=dr.select(valid, mi.Float(1), mi.Float(0)),
                     aovs=aovs,
                     wavelengths=ray.wavelengths
                 )
+                
                 # Perform the weight division
                 film.put_block(block)
                 
@@ -218,16 +224,17 @@ class PRBThreePointIntegrator(RBIntegrator):
                 active=mi.Bool(True)
             )
 
-            with dr.resume_grad():
-                si = scene.ray_intersect(ray,
-                                         ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
-                                         coherent=mi.Bool(True))
-                pos = dr.select(valid, sensor.sample_direction(si, [0, 0], active=valid)[0].uv, pos)
-                diff = si.p-ray.o
-                dist_squared = dr.squared_norm(diff)
-                dp = dr.dot(dr.normalize(diff), si.n)
-                D = dr.select(valid, dr.norm(dr.cross(si.dp_du, si.dp_dv)) * -dp / dist_squared , 1.)
+            # The shared state contains the first intersection point
+            pi = state_out[1]
 
+            with dr.resume_grad():
+                # Recompute the first intersection point with derivative tracking
+                si = pi.compute_surface_interaction(ray, 
+                                                    ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
+                                                    active=valid)
+                pos = dr.select(valid, sensor.sample_direction(si, [0, 0], active=valid)[0].uv, pos)
+
+                D = sensor_to_surface_reparam_det(sensor, si, ignore_near_plane=True, active=valid)
 
                 # Prepare an ImageBlock as specified by the film
                 block2 = film.create_block()
@@ -238,8 +245,8 @@ class PRBThreePointIntegrator(RBIntegrator):
                 # Accumulate into the image block
                 ADIntegrator._splat_to_block(
                     block2, film, pos,
-                    value=L * weight * dr.replace_grad(1, D/dr.detach(D)),
-                    weight=dr.replace_grad(1, D/dr.detach(D)),
+                    value=L * weight * det_over_det(D),
+                    weight=det_over_det(D),
                     alpha=dr.select(valid, mi.Float(1), mi.Float(0)),
                     aovs=aovs,
                     wavelengths=ray.wavelengths
@@ -270,7 +277,7 @@ class PRBThreePointIntegrator(RBIntegrator):
                sampler: mi.Sampler,
                ray: mi.Ray3f,
                δL: Optional[mi.Spectrum],
-               state_in: Optional[mi.Spectrum],
+               state_in: Optional[Tuple[mi.Spectrum, mi.PreliminaryIntersection3f]],
                active: mi.Bool,
                **kwargs # Absorbs unused arguments
     ) -> Tuple[mi.Spectrum, mi.Bool, List[mi.Float], mi.Spectrum]:
@@ -286,7 +293,7 @@ class PRBThreePointIntegrator(RBIntegrator):
         # Copy input arguments to avoid mutating the caller's state
         ray = mi.Ray3f(dr.detach(ray))
         depth = mi.UInt32(0)                          # Depth of current vertex
-        L = mi.Spectrum(0 if primal else state_in)    # Radiance accumulator
+        L = mi.Spectrum(0 if primal else state_in[0]) # Radiance accumulator
         δL = mi.Spectrum(δL if δL is not None else 0) # Differential/adjoint radiance
         β = mi.Spectrum(1)                            # Path throughput weight (includes geometry terms)
         η = mi.Float(1)                               # Index of refraction
@@ -294,27 +301,43 @@ class PRBThreePointIntegrator(RBIntegrator):
 
         # Variables caching information from the previous bounce
         prev_ray        = mi.Ray3f(dr.detach(ray))
+        prev_pi         = dr.zeros(mi.PreliminaryIntersection3f)
         prev_bsdf_pdf   = mi.Float(1.0)
         prev_bsdf_delta = mi.Bool(True)
         
+        # Variables caching information from the current bounce
+        pi = dr.zeros(mi.PreliminaryIntersection3f)
+
+        # Output variables of the primal phase
+        pi_first = dr.zeros(mi.PreliminaryIntersection3f)
+
         while dr.hint(active,
                       max_iterations=self.max_depth,
                       label="Path Replay Backpropagation (%s)" % mode.name):
             active_next = mi.Bool(active)
 
+            # Trace the first intersection point if in primal phase, or re-use if in adjoint phase
+            # At later intersections, pi is already set to pi_next at the end of this loop
+            # TODO: This is a bit ugly, but tracing the first intersection point outside of the recorded
+            #       loop does not work. It seems as if pi is not properly updated to pi_next.
+            pi = dr.select(depth != 0, pi,
+                           scene.ray_intersect_preliminary(ray, 
+                                                           coherent=(depth == 0),
+                                                           active=active_next) if primal else state_in[1])
+            pi_first = dr.select(depth == 0, pi, pi_first)
+
             with dr.resume_grad(when=not primal):
-                prev_si = scene.ray_intersect(prev_ray,
-                                         ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
-                                         coherent=False,
-                                         active=(depth != 0) & active_next)
-                si = scene.ray_intersect(ray,
-                                         ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
-                                         coherent=(depth == 0),
-                                         active=active_next)
-                # si.wi has a gradient as prev_si might move with pi
-                # if dr.hint(not primal, mode='scalar'):
+                prev_si = prev_pi.compute_surface_interaction(dr.detach(prev_ray),
+                                                              ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
+                                                              active=(depth != 0) & active_next)
+                
+                si = pi.compute_surface_interaction(dr.detach(ray),
+                                                    ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
+                                                    active=active_next)
+
+                # Since `ray` was detached when computing `si`, we need to recompute `si.wi` to follow `prev_si`
                 prev_p = dr.select(depth == 0, ray.o, prev_si.p)
-                si.wi  = dr.select(~si.is_valid(), si.wi, si.to_local(dr.normalize(prev_p - si.p)))
+                si.wi  = dr.select(si.is_valid(), si.to_local(dr.normalize(prev_p - si.p)), si.wi)
 
             # Get the BSDF, potentially computes texture-space differentials
             bsdf = si.bsdf(ray)
@@ -330,26 +353,21 @@ class PRBThreePointIntegrator(RBIntegrator):
 
             si_pdf = scene.pdf_emitter_direction(prev_si, ds, ~prev_bsdf_delta)
             
-            
             with dr.resume_grad(when=not primal):
-                dist_squared = dr.squared_norm(si.p-prev_si.p)
-                dp = dr.dot(si.to_world(si.wi), si.n)
-                # For environment emitters, si.is_valid() will be false and
-                # the local frame (dp_du, dp_dv) is invalid, but they should still contribute
-                D = dr.select(active_next & si.is_valid(), dr.norm(dr.cross(si.dp_du, si.dp_dv)) * dp / dist_squared, 1.)
-                LD = L * dr.replace_grad(1., D/dr.detach(D))
-                LD = dr.select((depth == 0), 0, LD)           
-            
-            # MW: For completeness, include multiplication by D (but it cancels)
-            mis = mis_weight(
-                prev_bsdf_pdf*D,
-                si_pdf*D
-            )
-            # The first samples are sampled differently
-            # Ugo: neccessary? I think mis is 1 for first hit
-            mis = dr.select((depth == 0), 1, mis)
+                D = solid_to_surface_reparam_det(si, prev_si.p, active=active_next)
 
-            # remember beta contains geometry term/pdf == 1
+                # Track how the radiance emitted from this point is warped by the determinant
+                LD = dr.select(depth != 0, L * det_over_det(D), 0)       
+            
+            # Since D is contained in both pdfs it cancels in the MIS weight
+            mis = mis_weight(
+                prev_bsdf_pdf, # * D 
+                si_pdf # * D
+            )
+
+            # Remember: β contains (determinant/pdf warping) = 1, but detached
+            # β *= dr.detach(D) / dr.detach(D)
+
             with dr.resume_grad(when=not primal):
                 Le = β * mis * ds.emitter.eval(si, active_next)
 
@@ -358,6 +376,7 @@ class PRBThreePointIntegrator(RBIntegrator):
 
             # Should we continue tracing to reach one more vertex?
             active_next &= (depth + 1 < self.max_depth) & si.is_valid()
+
             # Is emitter sampling even possible on the current vertex?
             active_em = active_next & mi.has_flag(bsdf.flags(), mi.BSDFFlags.Smooth)
 
@@ -365,38 +384,35 @@ class PRBThreePointIntegrator(RBIntegrator):
             ds_em, em_weight = scene.sample_emitter_direction(si, sampler.next_2d(), True, active_em)
             active_em &= (ds_em.pdf != 0.0)
 
+            ray_em = si.spawn_ray(ds_em.d)
             with dr.resume_grad(when=not primal):
-                # We need to recompute the sample with follow shape so it is a detached uv sample
-                si_em = scene.ray_intersect(dr.detach(si.spawn_ray(ds_em.d)), 
+                # Retrace the emitter ray so that the intersection point follows the emitter,
+                # and to obtain an intersection point with the differentials si_em.dp_du and si_em.dp_dv
+                # (only if the emitter is a surface)
+                si_em = scene.ray_intersect(ray_em, 
                                             ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
                                             coherent=mi.Bool(False),
-                                            active=active_em)
+                                            active=active_em & mi.has_flag(ds_em.emitter.flags(), mi.EmitterFlags.Surface))
 
-                # calculate the bsdf weight (for path througput) and pdf (for mis weighting)
-                # MW: for environment emitters, we have si_em.p != ds_em.p (because si_em.p = 0)
-                # TODO: How to handle this correctly?
-                diff_em = dr.select(si_em.is_valid(), si_em.p - si.p, ds_em.p - si.p)
-                ds_em.d = dr.normalize(diff_em)
-                wo = si.to_local(ds_em.d)
-                bsdf_value_em, bsdf_pdf_em = bsdf.eval_pdf(bsdf_ctx, si, wo, active_em)
+
+                # Compute the BSDF with an outgoing direction that follows the shapes
+                # TODO: For DeltaPosition emitters (point/spot), this is not fully consistent 
+                #       with `ad_threepoint` because ds_em.p is attached there but detached here.
+                wo_em = si.to_local(dr.normalize(dr.select(si_em.is_valid(), si_em.p - si.p, ds_em.p - si.p)))
+                bsdf_value_em, bsdf_pdf_em = bsdf.eval_pdf(bsdf_ctx, si, wo_em, active_em)
                 
-                # ds_em.pdf includes the inv geometry term, 
-                # and bsdf_pdf_em does not contain the geometry term.
-                # -> We need to multiply both with the geometry term:
-                dp_em = dr.dot(ds_em.d, si_em.n)
-                dist_squared_em = dr.squared_norm(diff_em)
-                # For environment emitters, si.is_valid() will be false and
-                # the local frame (dp_du, dp_dv) is invalid, but they should still contribute
-                D_em = dr.select(active_em & si_em.is_valid(), dr.norm(dr.cross(si_em.dp_du, si_em.dp_dv)) * -dp_em / dist_squared_em , 1.) 
-                
+                # For non-surface, `si_em` will be invalid, in which case `D_em` is one, 
+                # and the sample is processed as being a solid angle sample.
+                D_em = solid_to_surface_reparam_det(si_em, si.p, active_em)
+
                 if dr.hint(not primal, mode='scalar'):
-                    # update gradient of em_weight
+                    # Evaluate the emitter with gradient tracking (with detached pdf), and transform the sample to a surface sample
                     em_val = scene.eval_emitter_direction(si, ds_em, active_em)
-                    em_weight = dr.replace_grad(em_weight, dr.select((ds_em.pdf != 0), em_val / ds_em.pdf, 0)) * dr.replace_grad(1, D_em/dr.detach(D_em))
+                    em_weight = dr.replace_grad(em_weight, dr.select((ds_em.pdf != 0), em_val / ds_em.pdf, 0)) * det_over_det(D_em)
 
 
-            # MW: For completeness, include multiplication by D (but it cancels)
-            mis_em = dr.select(ds_em.delta, 1, mis_weight(ds_em.pdf*D_em, bsdf_pdf_em*D_em))
+            # Since D is contained in both pdfs it cancels in the MIS weight
+            mis_em = dr.select(ds_em.delta, 1, mis_weight(ds_em.pdf, bsdf_pdf_em))
 
             with dr.resume_grad(when=not primal):
                 Lr_dir = β * mis_em * bsdf_value_em * em_weight
@@ -413,13 +429,9 @@ class PRBThreePointIntegrator(RBIntegrator):
 
             L = (L + Le + Lr_dir) if primal else (L - Le - Lr_dir)
 
-            wo_world = si.to_world(bsdf_sample.wo)
-
-            ray_next = si.spawn_ray(wo_world) 
             η *= bsdf_sample.eta
             # Detached Sampling
             β *= bsdf_weight
-
 
             # -------------------- Stopping criterion ---------------------
 
@@ -437,6 +449,12 @@ class PRBThreePointIntegrator(RBIntegrator):
             rr_continue = sampler.next_1d() < rr_prob
             active_next &= ~rr_active | rr_continue
 
+            ray_next = si.spawn_ray(si.to_world(bsdf_sample.wo))
+
+            pi_next = scene.ray_intersect_preliminary(ray_next,
+                                                      coherent=mi.Bool(False),
+                                                      active=active_next)
+
             # ------------------ Differential phase only ------------------
 
             if dr.hint(not primal, mode='scalar'):
@@ -449,14 +467,12 @@ class PRBThreePointIntegrator(RBIntegrator):
                     # direct/indirect terminology isn't 100% accurate here,
                     # since there may be a direct component that is weighted
                     # via multiple importance sampling)
-                    si_next = scene.ray_intersect(ray_next,
-                                                  ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
-                                                  coherent=mi.Bool(False))
+                    si_next = pi_next.compute_surface_interaction(ray_next,
+                                                                  ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
+                                                                  active=active_next)
                     
                     # Recompute 'wo' to propagate derivatives to cosine term
-                    diff_next = si_next.p - si.p
-                    dir_next = dr.normalize(diff_next)
-                    wo = si.to_local(dir_next)
+                    wo = si.to_local(dr.normalize(si_next.p - si.p))
 
                     # Re-evaluate BSDF * cos(theta) differentiably
                     bsdf_val = bsdf.eval(bsdf_ctx, si, wo, active_next & si_next.is_valid())
@@ -501,14 +517,17 @@ class PRBThreePointIntegrator(RBIntegrator):
             
             depth[si.is_valid()] += 1
             active = active_next
+
             prev_ray = ray
+            prev_pi  = pi
             ray = ray_next
+            pi  = pi_next
 
         return (
             L if primal else δL, # Radiance/differential radiance
             depth != 0,          # Ray validity flag for alpha blending
             [],                  # Empty tuple of AOVs.
-            L                    # State for the differential phase (uneccessary)
+            (L, pi_first),       # State for the differential phase
         )
 
 mi.register_integrator("prb_threepoint", lambda props: PRBThreePointIntegrator(props))

@@ -218,12 +218,14 @@ class ThreePointIntegrator(ADIntegrator):
 
             active_em &= (ds_em.pdf != 0.0)
             
-            # Recompute the sample position for si_em.dp_du and si_em.dp_dv
+            # Retrace the emitter ray so that the intersection point follows the emitter,
+            # and to obtain an intersection point with the differentials si_em.dp_du and si_em.dp_dv
+            # (only if the emitter is a surface)
             ray_em = si.spawn_ray(ds_em.d)
             si_em  = scene.ray_intersect(dr.detach(ray_em), 
                                          ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
                                          coherent=mi.Bool(False),
-                                         active=active_em)
+                                         active=active_em & mi.has_flag(ds_em.emitter.flags(), mi.EmitterFlags.Surface))
             ray_em.d = dr.select(si_em.is_valid(), dr.normalize(si_em.p - si.p), ray_em.d)
 
             # For environment emitters, `si_em` will be invalid, in which
