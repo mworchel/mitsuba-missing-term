@@ -26,7 +26,7 @@ def set_siggraph_font():
     mpl.rc('text', **{'usetex': False})
     mpl.rc('mathtext', fontset='custom', rm='Linux Biolinum', it='Linux Biolinum:italic', bf='Linux Biolinum:bold')
 
-def generate_figure(integrators: List[str], data: dict, output_path: Path, grad_projection: str='red', square_r_setting_3: bool = True, quantile: float = 0.89, labels: Optional[List[str]] = None, exclude_first_gradient: bool = False):
+def generate_figure(integrators: List[str], data: dict, output_path: Path, grad_projection: str='red', square_r_setting_3: bool = True, quantile: float = 0.89, labels: Optional[List[str]] = None, exclude_first_gradient: bool = False, with_colorbar: bool = False):
     grad_projection_fn = None
     if grad_projection == 'red':
         grad_projection_fn = lambda grad: grad[...,0]
@@ -41,6 +41,12 @@ def generate_figure(integrators: List[str], data: dict, output_path: Path, grad_
 
     n_rows = num_settings
     n_cols = 2 + len(integrators) + (-1 if exclude_first_gradient else 0)
+    width_ratios = [1.]*n_cols
+
+    colorbar_width_ratio = 0.075
+    if with_colorbar:
+        width_ratios += [colorbar_width_ratio]
+
 
     # Optional: the first integrator can be ignored in the figure.
     #           This is useful if the first integrator merely serves the
@@ -49,9 +55,9 @@ def generate_figure(integrators: List[str], data: dict, output_path: Path, grad_
     def integrator_index_to_col(j: int):
         return j if not exclude_first_gradient else j-1
 
-    aspect = (n_rows / n_cols)
+    aspect = (n_rows / (n_cols + (colorbar_width_ratio if with_colorbar else 0)))
     fig = plt.figure(1, figsize=(FIGURE_WIDTH_ONE_COLUMN, aspect * FIGURE_WIDTH_ONE_COLUMN), constrained_layout=False)
-    gs  = fig.add_gridspec(n_rows, n_cols, wspace=0.05, hspace=0.05)
+    gs  = fig.add_gridspec(n_rows, n_cols + int(with_colorbar), wspace=0.05, hspace=0.05, width_ratios=width_ratios)
     r = None
     for i, setting in enumerate(data.keys()):
         setting_data = data[setting]
@@ -68,7 +74,7 @@ def generate_figure(integrators: List[str], data: dict, output_path: Path, grad_
                 grad_fd = grad_projection_fn(setting_data[j][2])
                 ax_fd = disable_ticks(fig.add_subplot(gs[i, j + 1]))
                 if grad_projection is None:
-                    ax_fd.imshow(mi.Bitmap(grad_fd).convert(srgb_gamma=True))
+                    im_fd = ax_fd.imshow(mi.Bitmap(grad_fd).convert(srgb_gamma=True))
                 else:
                     # init range
                     r = np.quantile(np.abs(grad_fd), q)
@@ -76,7 +82,7 @@ def generate_figure(integrators: List[str], data: dict, output_path: Path, grad_
                     if square_r_setting_3 and (i == 2):
                         r = np.quantile(np.abs(grad_fd), q)*2
                     #r = np.maximum(r, 1)
-                    ax_fd.imshow(grad_fd, cmap='coolwarm', vmin=-r, vmax=r)
+                    im_fd = ax_fd.imshow(grad_fd, cmap='coolwarm', vmin=-r, vmax=r)
 
                 if i == num_settings - 1:
                     ax_img.set_xlabel("Image", fontsize=12)
@@ -99,6 +105,13 @@ def generate_figure(integrators: List[str], data: dict, output_path: Path, grad_
             if i == num_settings - 1:
                 integrator_label = labels[col] if labels is not None else f"{integrator}"
                 ax_fw.set_xlabel(integrator_label, fontsize=12)
+
+    # Last column is the color bar
+    if with_colorbar:
+        cax = fig.add_subplot(gs[(n_rows+1)//2-1, -1])
+        cbar = fig.colorbar(im_fd, cax=cax)
+        cbar.set_ticks([-r, 0, +r])
+        cbar.set_ticklabels(['-', 0, '+'], fontsize=12)
 
     plt.show()
 
