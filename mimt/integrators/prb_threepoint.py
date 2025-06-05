@@ -334,10 +334,10 @@ class PRBThreePointIntegrator(RBIntegrator):
                 si = pi.compute_surface_interaction(dr.detach(ray),
                                                     ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
                                                     active=active_next)
-
-                # Since `ray` was detached when computing `si`, we need to recompute `si.wi` to follow `prev_si`
-                prev_p = dr.select(depth == 0, ray.o, prev_si.p)
-                si.wi  = dr.select(si.is_valid(), si.to_local(dr.normalize(prev_p - si.p)), si.wi)
+                if dr.hint(not primal, mode='scalar'):
+                    # Since `ray` was detached when computing `si`, we need to recompute `si.wi` to follow `prev_si`
+                    prev_p = dr.select(depth == 0, ray.o, prev_si.p)
+                    si.wi  = dr.select(si.is_valid(), si.to_local(dr.normalize(prev_p - si.p)), si.wi)
 
             # Get the BSDF, potentially computes texture-space differentials
             bsdf = si.bsdf(ray)
@@ -352,12 +352,13 @@ class PRBThreePointIntegrator(RBIntegrator):
             ds = mi.DirectionSample3f(scene, si=si, ref=prev_si)
 
             si_pdf = scene.pdf_emitter_direction(prev_si, ds, ~prev_bsdf_delta)
-            
-            with dr.resume_grad(when=not primal):
-                D = solid_to_surface_reparam_det(si, prev_si.p, active=active_next)
 
-                # Track how the radiance emitted from this point is warped by the determinant
-                LD = dr.select(depth != 0, L * det_over_det(D), 0)       
+            if dr.hint(not primal, mode='scalar'):
+                with dr.resume_grad(when=not primal):
+                    D = solid_to_surface_reparam_det(si, prev_si.p, active=active_next)
+
+                    # Track how the radiance emitted from this point is warped by the determinant
+                    LD = dr.select(depth != 0, L * det_over_det(D), 0)       
             
             # Since D is contained in both pdfs it cancels in the MIS weight
             mis = mis_weight(
@@ -389,23 +390,25 @@ class PRBThreePointIntegrator(RBIntegrator):
                 # Retrace the emitter ray so that the intersection point follows the emitter,
                 # and to obtain an intersection point with the differentials si_em.dp_du and si_em.dp_dv
                 # (only if the emitter is a surface)
-                si_em = scene.ray_intersect(ray_em, 
-                                            ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
-                                            coherent=mi.Bool(False),
-                                            active=active_em & mi.has_flag(ds_em.emitter.flags(), mi.EmitterFlags.Surface))
+                if dr.hint(not primal, mode='scalar'):
+                    si_em = scene.ray_intersect(ray_em, 
+                                                ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
+                                                coherent=mi.Bool(False),
+                                                active=active_em & mi.has_flag(ds_em.emitter.flags(), mi.EmitterFlags.Surface))
 
+                    # Compute the BSDF with an outgoing direction that follows the shapes
+                    # TODO: For DeltaPosition emitters (point/spot), this is not fully consistent 
+                    #       with `ad_threepoint` because ds_em.p is attached there but detached here.
+                    wo_em = si.to_local(dr.normalize(dr.select(si_em.is_valid(), si_em.p - si.p, ds_em.p - si.p)))
+                else:
+                    wo_em = si.to_local(ds_em.d)
 
-                # Compute the BSDF with an outgoing direction that follows the shapes
-                # TODO: For DeltaPosition emitters (point/spot), this is not fully consistent 
-                #       with `ad_threepoint` because ds_em.p is attached there but detached here.
-                wo_em = si.to_local(dr.normalize(dr.select(si_em.is_valid(), si_em.p - si.p, ds_em.p - si.p)))
                 bsdf_value_em, bsdf_pdf_em = bsdf.eval_pdf(bsdf_ctx, si, wo_em, active_em)
-                
-                # For non-surface, `si_em` will be invalid, in which case `D_em` is one, 
-                # and the sample is processed as being a solid angle sample.
-                D_em = solid_to_surface_reparam_det(si_em, si.p, active_em)
 
                 if dr.hint(not primal, mode='scalar'):
+                    # For non-surface, `si_em` will be invalid, in which case `D_em` is one, 
+                    # and the sample is processed as being a solid angle sample.
+                    D_em = solid_to_surface_reparam_det(si_em, si.p, active_em)
                     # Evaluate the emitter with gradient tracking (with detached pdf), and transform the sample to a surface sample
                     em_val = scene.eval_emitter_direction(si, ds_em, active_em)
                     em_weight = dr.replace_grad(em_weight, dr.select((ds_em.pdf != 0), em_val / ds_em.pdf, 0)) * det_over_det(D_em)
