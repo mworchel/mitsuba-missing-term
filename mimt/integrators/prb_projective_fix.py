@@ -186,24 +186,30 @@ class PathProjectiveFixIntegrator(PathProjectiveIntegrator):
                 active=mi.Bool(True)
             )
 
+            # The shared state contains the first intersection point
+            pi = state_out[1]
+
             with dr.resume_grad():
-                
-                block = film.create_block()
+                # Prepare an ImageBlock as specified by the film
+                block = film.create_block(normalize=True)
+
                 # Only use the coalescing feature when rendering enough samples
                 block.set_coalesce(block.coalesce() and spp >= 4)
-                si = scene.ray_intersect(ray,
-                                         ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
-                                         coherent=mi.Bool(True))
+
+                # Recompute the first intersection point with derivative tracking
+                si = pi.compute_surface_interaction(ray, 
+                                                    ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
+                                                    active=valid)
                 pos = dr.select(valid, sensor.sample_direction(si, [0, 0], active=valid)[0].uv, pos)
-                diff = si.p-ray.o
-                dist_squared = dr.squared_norm(diff)
-                dp = dr.dot(dr.normalize(diff), si.n)
-                D = dr.select(valid, dr.norm(dr.cross(si.dp_du, si.dp_dv)) * -dp / dist_squared , 1.)
-                #Accumulate into the image block
+
+                D = sensor_to_surface_reparam_det(sensor, si, ignore_near_plane=True, active=valid)
+
+                # Accumulate into the image block
+                # particle-style to match the measurement of the boundary term
                 ADIntegrator._splat_to_block(
                     block, film, pos,
-                    value=L * weight * dr.replace_grad(1, D/dr.detach(D)),
-                    weight=dr.replace_grad(1, D/dr.detach(D)),
+                    value=L * weight * dr.rcp(mi.ScalarFloat(spp)) * det_over_det(D),
+                    weight=0,
                     alpha=dr.select(valid, mi.Float(1), mi.Float(0)),
                     aovs=aovs,
                     wavelengths=ray.wavelengths
@@ -220,16 +226,17 @@ class PathProjectiveFixIntegrator(PathProjectiveIntegrator):
             film.clear()
 
             # Prepare an ImageBlock as specified by the film
-            block = film.create_block()
+            block = film.create_block(normalize=True)
 
             # Only use the coalescing feature when rendering enough samples
             block.set_coalesce(block.coalesce() and spp >= 4)
 
             # Accumulate into the image block
+            # particle-style to match the measurement of the boundary term
             ADIntegrator._splat_to_block(
                 block, film, pos,
-                value=δL * weight,
-                weight=1.0,
+                value=δL * weight * dr.rcp(mi.ScalarFloat(spp)),
+                weight=0,
                 alpha=dr.select(valid_2, mi.Float(1), mi.Float(0)),
                 aovs=[δaov * weight for δaov in δaovs],
                 wavelengths=ray.wavelengths
