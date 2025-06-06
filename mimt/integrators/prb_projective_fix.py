@@ -318,7 +318,7 @@ class PathProjectiveFixIntegrator(PathProjectiveIntegrator):
                         dr.enable_grad(aov)
                         aovs.append(aov)
                     splatting_and_backward_gradient_image(
-                        value=L * weight,
+                        value=L * weight * dr.rcp(mi.ScalarFloat(spp)),
                         weight=0,
                         alpha=1.0,
                         aovs=[aov * weight for aov in aovs]
@@ -378,7 +378,7 @@ class PathProjectiveFixIntegrator(PathProjectiveIntegrator):
                 # particle-style to match the measurement of the boundary term
                 ADIntegrator._splat_to_block(
                     block, film, pos,
-                    value=L * weight * det_over_det(D),
+                    value=L * weight * dr.rcp(mi.ScalarFloat(spp)) * det_over_det(D),
                     weight=0,
                     alpha=dr.select(valid, mi.Float(1), mi.Float(0)),
                     aovs=aovs,
