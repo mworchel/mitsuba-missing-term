@@ -284,7 +284,7 @@ class PathProjectiveFixIntegrator(PathProjectiveIntegrator):
                 '''
 
                 # Prepare an ImageBlock as specified by the film
-                block = film.create_block()
+                block = film.create_block(normalize=True)
 
                 # Only use the coalescing feature when rendering enough samples
                 block.set_coalesce(block.coalesce() and spp >= 4)
@@ -319,7 +319,7 @@ class PathProjectiveFixIntegrator(PathProjectiveIntegrator):
                         aovs.append(aov)
                     splatting_and_backward_gradient_image(
                         value=L * weight,
-                        weight=1.0,
+                        weight=0,
                         alpha=1.0,
                         aovs=[aov * weight for aov in aovs]
                     )
@@ -356,35 +356,37 @@ class PathProjectiveFixIntegrator(PathProjectiveIntegrator):
                 active=mi.Bool(True)
             )
 
+            # The shared state contains the first intersection point
+            pi = state_out[1]
+
             with dr.resume_grad():
-                si = scene.ray_intersect(ray,
-                                         ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
-                                         coherent=mi.Bool(True))
-                pos = dr.select(valid, sensor.sample_direction(si, [0, 0], active=valid)[0].uv, pos)
-                diff = si.p-ray.o
-                dist_squared = dr.squared_norm(diff)
-                dp = dr.dot(dr.normalize(diff), si.n)
-                D = dr.select(valid, dr.norm(dr.cross(si.dp_du, si.dp_dv)) * -dp / dist_squared , 1.)
-
-
                 # Prepare an ImageBlock as specified by the film
-                block2 = film.create_block()
+                block = film.create_block(normalize=True)
 
                 # Only use the coalescing feature when rendering enough samples
-                block2.set_coalesce(block2.coalesce() and spp >= 4)
+                block.set_coalesce(block.coalesce() and spp >= 4)
+
+                # Recompute the first intersection point with derivative tracking
+                si = pi.compute_surface_interaction(ray, 
+                                                    ray_flags=mi.RayFlags.All | mi.RayFlags.FollowShape,
+                                                    active=valid)
+                pos = dr.select(valid, sensor.sample_direction(si, [0, 0], active=valid)[0].uv, pos)
+
+                D = sensor_to_surface_reparam_det(sensor, si, ignore_near_plane=True, active=valid)
 
                 # Accumulate into the image block
+                # particle-style to match the measurement of the boundary term
                 ADIntegrator._splat_to_block(
-                    block2, film, pos,
-                    value=L * weight * dr.replace_grad(1, D/dr.detach(D)),
-                    weight=dr.replace_grad(1, D/dr.detach(D)),
+                    block, film, pos,
+                    value=L * weight * det_over_det(D),
+                    weight=0,
                     alpha=dr.select(valid, mi.Float(1), mi.Float(0)),
                     aovs=aovs,
                     wavelengths=ray.wavelengths
                 )
 
                 # film the weight division and return an image tensor
-                film.put_block(block2)
+                film.put_block(block)
                 image = film.develop()
                 dr.set_grad(image, grad_in)
 
