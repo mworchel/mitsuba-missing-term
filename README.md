@@ -20,6 +20,6 @@
 ## About
 
 This repository contains code to reproduce the figures of the paper "Radiative Backpropagation with Non-Static Geometry". The implementation is based on the differentiable renderer [Mitsuba 3](https://github.com/mitsuba-renderer/mitsuba3). 
-- `case_1_cornell_box.ipynb`: Code for Figures 1, 2, 3.
+- `case_1_indirect_from_spatially_varying_emitter.ipynb`: Code for Figures 1, 2, 3.
 - `case_2_cornell_box.ipynb`: Code for Figures 4, 5, 6.
 - `moving_path_inset.ipynb`: Code for the inset "non-static geometry moves a path".
