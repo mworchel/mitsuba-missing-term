@@ -1,9 +1,11 @@
 <p align="center">
 
-  <h1 align="center">Radiative Backpropagation with Non-Static Geometry</h1>
+  <h1 align="center"><a href="https://diglib.eg.org/items/67d3e00c-af8b-4b7e-a4ab-84d3f1489c00">Radiative Backpropagation with Non-Static Geometry</a></h1>
 
   <div align="center">
-    <img src="figures/title.jpg" alt="Logo" width="40%">
+    <a href="https://diglib.eg.org/items/67d3e00c-af8b-4b7e-a4ab-84d3f1489c00">
+      <img src="figures/title.jpg" alt="Logo" width="40%">
+    </a>
   </div>
 
   <p align="center">
