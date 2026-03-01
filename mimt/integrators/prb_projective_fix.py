@@ -1,5 +1,7 @@
 from __future__ import annotations # Delayed parsing of type annotations
 
+from packaging.version import Version
+
 import drjit as dr
 import mitsuba as mi
 
@@ -590,11 +592,17 @@ class PathProjectiveFixIntegrator(PathProjectiveIntegrator):
 
         return result_img
 
-    def sample_radiance_difference(self, scene, ss, curr_depth, sampler, active):
+    def sample_radiance_difference(self, scene, ss, curr_depth, sampler, wavelengths_or_active, active = None):
         """
         See ``PSIntegrator.sample_radiance_difference()`` for a description of
         this interface and the role of the various parameters and return values.
         """
+
+        wavelengths = None
+        if Version(mi.__version__) >= Version("3.7"):
+            wavelengths = wavelengths_or_active
+        else:
+            active = wavelengths_or_active
 
         # ----------- Estimate the radiance of the background -----------
 
@@ -602,6 +610,8 @@ class PathProjectiveFixIntegrator(PathProjectiveIntegrator):
             ss.p + (1 + dr.max(dr.abs(ss.p))) * (ss.d * ss.offset + ss.n * mi.math.ShapeEpsilon),
             ss.d
         )
+        if wavelengths is not None:
+            ray_bg.wavelengths = wavelengths
         radiance_bg, _, _, _ = self.sample(
             dr.ADMode.Primal, scene, sampler, ray_bg, curr_depth, None, None, active, False, None)
 
