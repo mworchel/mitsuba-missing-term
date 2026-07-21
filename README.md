@@ -11,11 +11,15 @@
   <p align="center">
     <i>Eurographics Symposium on Rendering (EGSR) 2025</i>
     <br />
-    <a href="https://mworchel.github.io/"><strong>Markus Worchel</strong></a>
+    <a href="https://mworchel.github.io/"><strong>Markus Worchel</strong></a>*
     ·
-    <a href="https://www.cg.tu-berlin.de/people/ugo-finnendahl"><strong>Ugo Finnendahl</strong></a>
+    <a href="https://www.cg.tu-berlin.de/people/ugo-finnendahl"><strong>Ugo Finnendahl</strong></a>*
     ·
     <a href="https://www.cg.tu-berlin.de/people/marc-alexa"><strong>Marc Alexa</strong></a>
+  </p>
+
+  <p align="center">
+   *Equal contribution (shared first author)
   </p>
 </p>
 
